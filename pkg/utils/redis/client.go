@@ -207,6 +207,13 @@ func (c *Client) SetMaster(master string) error {
 	if err != nil {
 		return errors.Trace(err)
 	}
+	if _, err := c.Do("CONFIG", "SET", "masterauth", c.Auth); err != nil {
+		return errors.Trace(err)
+	}
+	if _, err := c.Do("SLAVEOF", host, port); err != nil {
+		return errors.Trace(err)
+	}
+	/*
 	c.Send("MULTI")
 	c.Send("CONFIG", "SET", "masterauth", c.Auth)
 	c.Send("SLAVEOF", host, port)
@@ -221,6 +228,7 @@ func (c *Client) SetMaster(master string) error {
 			return errors.Trace(err)
 		}
 	}
+	*/
 	return nil
 }
 
