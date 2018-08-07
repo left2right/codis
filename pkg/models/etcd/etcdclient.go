@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"github.com/coreos/etcd/client"
 
@@ -158,7 +158,7 @@ func (c *Client) Update(path string, data []byte) error {
 	return nil
 }
 
-func (c *Client) Delete(path string) error {
+func (c *Client) Delete(path string, _ bool) error {
 	c.Lock()
 	defer c.Unlock()
 	if c.closed {

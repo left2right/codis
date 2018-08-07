@@ -4,12 +4,10 @@
 package proxy
 
 import (
-	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -50,7 +48,6 @@ type Proxy struct {
 		masters map[int]string
 		servers []string
 	}
-	jodis *Jodis
 }
 
 var ErrClosedProxy = errors.New("use of closed proxy")
@@ -141,19 +138,6 @@ func (s *Proxy) setup(config *Config) error {
 		s.model.Token,
 	)
 
-	if config.JodisAddr != "" {
-		c, err := models.NewClient(config.JodisName, config.JodisAddr, config.JodisAuth, config.JodisTimeout.Duration())
-		if err != nil {
-			return err
-		}
-		if config.JodisCompatible {
-			s.model.JodisPath = filepath.Join("/zk/codis", fmt.Sprintf("db_%s", config.ProductName), "proxy", s.model.Token)
-		} else {
-			s.model.JodisPath = models.JodisPath(config.ProductName, s.model.Token)
-		}
-		s.jodis = NewJodis(c, s.model)
-	}
-
 	return nil
 }
 
@@ -168,9 +152,6 @@ func (s *Proxy) Start() error {
 	}
 	s.online = true
 	s.router.Start()
-	if s.jodis != nil {
-		s.jodis.Start()
-	}
 	return nil
 }
 
@@ -183,9 +164,6 @@ func (s *Proxy) Close() error {
 	s.closed = true
 	close(s.exit.C)
 
-	if s.jodis != nil {
-		s.jodis.Close()
-	}
 	if s.ladmin != nil {
 		s.ladmin.Close()
 	}
@@ -479,12 +457,14 @@ type Stats struct {
 
 	Ops struct {
 		Total int64 `json:"total"`
+		Slows int64 `json:"slows"`
 		Fails int64 `json:"fails"`
 		Redis struct {
 			Errors int64 `json:"errors"`
 		} `json:"redis"`
-		QPS int64      `json:"qps"`
-		Cmd []*OpStats `json:"cmd,omitempty"`
+		QPS     int64      `json:"qps"`
+		SlowQps int64      `json:"slow_qps"`
+		Cmd     []*OpStats `json:"cmd,omitempty"`
 	} `json:"ops"`
 
 	Sessions struct {
@@ -581,9 +561,11 @@ func (s *Proxy) Stats(flags StatsFlags) *Stats {
 	stats.Sentinels.Switched = s.HasSwitched()
 
 	stats.Ops.Total = OpTotal()
+	stats.Ops.Slows = OpSlows()
 	stats.Ops.Fails = OpFails()
 	stats.Ops.Redis.Errors = OpRedisErrors()
 	stats.Ops.QPS = OpQPS()
+	stats.Ops.SlowQps = OpSlowQPS()
 
 	if flags.HasBit(StatsCmds) {
 		stats.Ops.Cmd = GetOpStatsAll()

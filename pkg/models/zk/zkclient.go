@@ -297,7 +297,7 @@ func (c *Client) update(conn *zk.Conn, path string, data []byte) error {
 	return nil
 }
 
-func (c *Client) Delete(path string) error {
+func (c *Client) Delete(path string, _ bool) error {
 	c.Lock()
 	defer c.Unlock()
 	if c.closed {

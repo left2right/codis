@@ -1,4 +1,4 @@
-// Copyright 2016 CodisLabs. All Rights Reserved.
+// Copyright 2016 ForzaLabs. All Rights Reserved.
 // Licensed under the MIT (MIT-LICENSE.txt) license.
 
 package topom
@@ -6,9 +6,9 @@ package topom
 import (
 	"testing"
 
-	"github.com/CodisLabs/codis/pkg/models"
-	"github.com/CodisLabs/codis/pkg/proxy"
-	"github.com/CodisLabs/codis/pkg/utils/assert"
+	"ForzaDB/forza/pkg/models"
+	"ForzaDB/forza/pkg/proxy"
+	"ForzaDB/forza/pkg/utils/assert"
 )
 
 func getSlotMapping(t *Topom, sid int) *models.SlotMapping {

@@ -15,12 +15,6 @@ admin_addr = "127.0.0.1:11081"
 proto_type = "tcp4"
 proxy_addr = "127.0.0.1:19001"
 
-# Set jodis address & session timeout, only accept "zookeeper" & "etcd".
-jodis_name = ""
-jodis_addr = ""
-jodis_timeout = "20s"
-jodis_compatible = false
-
 # Set datacenter of proxy.
 proxy_datacenter = ""
 

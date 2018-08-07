@@ -1,4 +1,4 @@
-// Copyright 2016 CodisLabs. All Rights Reserved.
+// Copyright 2016 ForzaLabs. All Rights Reserved.
 // Licensed under the MIT (MIT-LICENSE.txt) license.
 
 package bufio2
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/CodisLabs/codis/pkg/utils/assert"
+	"ForzaDB/forza/pkg/utils/assert"
 )
 
 func newReader(n int, input string) *Reader {

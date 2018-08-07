@@ -10,16 +10,16 @@ Codis 3.x consists of the following components:
 * **Codis Proxy**: is the proxy service of client connections. Codis Proxy Implements Redis Protocol. In addition to some commands do not support ([unsupported command list] (unsupported_cmds.md)).
 
     + For the same product cluster, you can deploy multiple codis-proxy instances at the same time;
-    + Different codis-proxy by codis-dashboard to ensure state synchronization.
+    + Different codis-proxy by codis-topom to ensure state synchronization.
 
-* **Codis Dashboard**: cluster management tools, support codis-proxy, codis-server add, delete, slot migrate(sync/async), and other operations. When a cluster state changes, the codis-dashboard maintains the consistency of all codis-proxy states under the cluster.
+* **Codis Dashboard**: cluster management tools, support codis-proxy, codis-server add, delete, slot migrate(sync/async), and other operations. When a cluster state changes, the codis-topom maintains the consistency of all codis-proxy states under the cluster.
 
-    + For the same product cluster, the same time codis-dashboard can only have 0 or 1;
-    + All changes to the cluster must be done via codis-dashboard.
+    + For the same product cluster, the same time codis-topom can only have 0 or 1;
+    + All changes to the cluster must be done via codis-topom.
 
 * **Codis Admin**: Command-line tool for cluster management.
 
-    + Can be used to control the codis-proxy, codis-dashboard status, and access external storage.
+    + Can be used to control the codis-proxy, codis-topom status, and access external storage.
 
 * **Codis FE**: cluster management Web Interface.
 
@@ -79,7 +79,7 @@ $ cd $GOPATH/src/github.com/CodisLabs/codis
 $ make
 make -j -C extern/redis-3.2.8/
 ... ...
-go build -i -o bin/codis-dashboard ./cmd/dashboard
+go build -i -o bin/codis-topom ./cmd/topom
 go build -i -o bin/codis-proxy ./cmd/proxy
 go build -i -o bin/codis-admin ./cmd/admin
 go build -i -o bin/codis-fe ./cmd/fe
@@ -88,7 +88,7 @@ $ ls bin/
 total 69124
 drwxr-xr-x 4 codis codis     4096 Jan  4 14:55 assets
 -rwxr-xr-x 1 codis codis 17600752 Jan  4 14:55 codis-admin
--rwxr-xr-x 1 codis codis 18416320 Jan  4 14:55 codis-dashboard
+-rwxr-xr-x 1 codis codis 18416320 Jan  4 14:55 codis-topom
 -rwxr-xr-x 1 codis codis  9498040 Jan  4 14:55 codis-fe
 -rwxr-xr-x 1 codis codis 11057280 Jan  4 14:55 codis-proxy
 -rwxr-xr-x 1 codis codis  4234432 Jan  4 14:55 codis-server
@@ -106,15 +106,15 @@ Build a standalone codis cluster in 2 minutes,without any external component dep
 The admin folder in the source code provides a series of scripts to quickly start, stop the codis components, improve the efficiency of operation and maintenance.
 
 
-### Start codis-dashboard
-Use codis-dashboard-admin.sh script to start dashboard and check the dashboard log to confirm whether there is an exception.
+### Start codis-topom
+Use codis-topom-admin.sh script to start topom server and check the topom server log to confirm whether there is an exception.
 ```
-./admin/codis-dashboard-admin.sh start
- tail -100 ./log/codis-dashboard.log.2017-04-08
+./admin/codis-topom-admin.sh start
+ tail -100 ./log/codis-topom.log.2017-04-08
 ```
 ```
 2017/04/08 15:16:57 fsclient.go:197: [INFO] fsclient - create /codis3/codis-demo/topom OK
-2017/04/08 15:16:57 main.go:140: [WARN] [0xc42025f7a0] dashboard is working ...
+2017/04/08 15:16:57 main.go:140: [WARN] [0xc42025f7a0] topom server is working ...
 2017/04/08 15:16:57 topom.go:424: [WARN] admin start service on [::]:18080
 
 ```

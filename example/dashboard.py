@@ -16,7 +16,7 @@ class CodisDashboard(Process):
         self.product_auth = product_auth
 
         self.logfile = "dashboard-{}.log".format(admin_port)
-        self.command = "codis-dashboard -c {}".format(self.config)
+        self.command = "codis-topom -c {}".format(self.config)
         Process.__init__(self, self.command, self.logfile)
 
         dict = {"admin_port": admin_port, "pid": self.proc.pid}

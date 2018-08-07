@@ -119,12 +119,12 @@ CAS 暂时不支持, 目前只支持eval的方式来跑lua脚本，需要配合T
 
 ### Dashboard 中 Ops 一直是 0？
 
-检查你的启动 dashboard 进程的机器，看是否可以访问proxy的地址，对应的地址是 proxy 启动参数中的 debug_var_addr 中填写的地址。
+检查你的启动 topom server 进程的机器，看是否可以访问proxy的地址，对应的地址是 proxy 启动参数中的 debug_var_addr 中填写的地址。
 
 ###  zk: node already exists
 无论是proxy还是dashboard，都会在zk上注册自己的节点，同时在程序正常退出的时候会删掉对应的节点，但如果异常退出或试用`kill -9 {pid}`就会导致zk的节点无法删除，在下一次启动的时候会报“zk: node already exists”的错误。
 
-因此关闭服务的时候直接用`kill {pid}`不要-9，同时如果无法启动并且确认没有其他运行中的进程占用zk上的节点，可以在zk上手动删除/zk/codis/db_test/dashboard 或/zk/codis/db_test/fence/{host:port}.
+因此关闭服务的时候直接用`kill {pid}`不要-9，同时如果无法启动并且确认没有其他运行中的进程占用zk上的节点，可以在zk上手动删除/zk/codis/db_test/topom 或/zk/codis/db_test/fence/{host:port}.
 
 ### 编译报错  undefined: utils.Version
 说明没有正确的设置go项目路径导致生成的文件找不到。见[安装教程](https://github.com/CodisLabs/codis/blob/master/doc/tutorial_zh.md#build-codis-proxy--codis-config)来正确配置环境变量并用正确的方式下载代码。
@@ -134,13 +134,10 @@ CAS 暂时不支持, 目前只支持eval的方式来跑lua脚本，需要配合T
 
 Codis的proxy会注册在zk上并监听新的zk事件。因为涉及到数据一致性的问题，所有proxy必须能尽快知道slot状态的改变，因此一旦和zk的连接出了问题就无法知道最新的slot信息从而可能不得不阻塞一些请求以防止数据错误或丢失。
 
-Proxy会每几秒给zk发心跳，proxy的load太高可能导致timeout时间内（默认30秒，配置文件中可以修改）没有成功发心跳导致zk认为proxy已经挂了（当然也可能proxy确实挂了），
-这时如果client用了我们修改的Jedis, [Jodis](https://github.com/CodisLabs/jodis)，是会监控到zk节点上proxy少了一个从而自动避开请求这个proxy以保证客户端业务的可用性。如果用非Java语言可以根据Jodis代码DIY一个监听zk的客户端。
+Proxy会每几秒给zk发心跳，proxy的load太高可能导致timeout时间内（默认30秒，配置文件中可以修改）没有成功发心跳导致zk认为proxy已经挂了（当然也可能proxy确实挂了）
 另外，如果需要异步请求，可以使用我们基于Netty开发的[Nedis](https://github.com/CodisLabs/nedis)。
 
 当然，proxy收到session expired的错误也不意味着proxy一定要强制退出，但是这是最方便、安全的实现方式。而且实际使用中出现错误的情况通常是zk或proxy的load过高导致的，即使这时不退出可能业务的请求也会受影响，因此出现这个问题通常意味着需要加机器了。
-
-如果不依赖zk/Jodis来做proxy的高可用性（虽然我们建议这样做），可以适当延长配置文件中的超时时间以降低出这个错误的概率。
 
 ### proxy异常退出
 目前proxy异常退出主要有两种可能，一种是zk的session expired错误，原因见前一节；另一种是从zk获取集群信息时超时或者报错。总体来说都是因为proxy和zk的连接不稳定导致的，而现在还没有加上重试等逻辑。

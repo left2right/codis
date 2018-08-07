@@ -12,10 +12,15 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/redis"
 )
 
-func (s *Topom) CreateGroup(gid int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) CreateGroup(product string, productAuth string, gid int) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -26,19 +31,24 @@ func (s *Topom) CreateGroup(gid int) error {
 	if ctx.group[gid] != nil {
 		return errors.Errorf("group-[%d] already exists", gid)
 	}
-	defer s.dirtyGroupCache(gid)
+	defer s.dirtyGroupCache(product, gid)
 
 	g := &models.Group{
 		Id:      gid,
 		Servers: []*models.GroupServer{},
 	}
-	return s.storeCreateGroup(g)
+	return s.storeCreateGroup(product, g)
 }
 
-func (s *Topom) RemoveGroup(gid int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) RemoveGroup(product string, productAuth string, gid int) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -50,15 +60,20 @@ func (s *Topom) RemoveGroup(gid int) error {
 	if len(g.Servers) != 0 {
 		return errors.Errorf("group-[%d] isn't empty", gid)
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
-	return s.storeRemoveGroup(g)
+	return s.storeRemoveGroup(product, g)
 }
 
-func (s *Topom) ResyncGroup(gid int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) ResyncGroup(product string, productAuth string, gid int) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -72,16 +87,21 @@ func (s *Topom) ResyncGroup(gid int) error {
 		log.Warnf("group-[%d] resync-group failed", g.Id)
 		return err
 	}
-	defer s.dirtyGroupCache(gid)
+	defer s.dirtyGroupCache(product, gid)
 
 	g.OutOfSync = false
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) ResyncGroupAll() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) ResyncGroupAll(product string, productAuth string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -91,20 +111,25 @@ func (s *Topom) ResyncGroupAll() error {
 			log.Warnf("group-[%d] resync-group failed", g.Id)
 			return err
 		}
-		defer s.dirtyGroupCache(g.Id)
+		defer s.dirtyGroupCache(product, g.Id)
 
 		g.OutOfSync = false
-		if err := s.storeUpdateGroup(g); err != nil {
+		if err := s.storeUpdateGroup(product, g); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Topom) GroupAddServer(gid int, dc, addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) GroupAddServer(product string, productAuth string, gid int, dc, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -130,22 +155,27 @@ func (s *Topom) GroupAddServer(gid int, dc, addr string) error {
 	}
 
 	if p := ctx.sentinel; len(p.Servers) != 0 {
-		defer s.dirtySentinelCache()
+		defer s.dirtySentinelCache(product)
 		p.OutOfSync = true
-		if err := s.storeUpdateSentinel(p); err != nil {
+		if err := s.storeUpdateSentinel(product, p); err != nil {
 			return err
 		}
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	g.Servers = append(g.Servers, &models.GroupServer{Addr: addr, DataCenter: dc})
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) GroupDelServer(gid int, addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) GroupDelServer(product string, productAuth string, gid int, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -170,13 +200,13 @@ func (s *Topom) GroupDelServer(gid int, addr string) error {
 	}
 
 	if p := ctx.sentinel; len(p.Servers) != 0 {
-		defer s.dirtySentinelCache()
+		defer s.dirtySentinelCache(product)
 		p.OutOfSync = true
-		if err := s.storeUpdateSentinel(p); err != nil {
+		if err := s.storeUpdateSentinel(product, p); err != nil {
 			return err
 		}
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	if index != 0 && g.Servers[index].ReplicaGroup {
 		g.OutOfSync = true
@@ -194,13 +224,18 @@ func (s *Topom) GroupDelServer(gid int, addr string) error {
 
 	g.Servers = slice
 
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) GroupPromoteServer(gid int, addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) GroupPromoteServer(product string, productAuth string, gid int, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -223,7 +258,7 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 			return errors.Errorf("group-[%d] can't promote master", g.Id)
 		}
 	}
-	if n := s.action.executor.Int64(); n != 0 {
+	if n := s.products[product].action.executor.Int64(); n != 0 {
 		return errors.Errorf("slots-migration is running = %d", n)
 	}
 
@@ -231,13 +266,13 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 
 	case models.ActionNothing:
 
-		defer s.dirtyGroupCache(g.Id)
+		defer s.dirtyGroupCache(product, g.Id)
 
 		log.Warnf("group-[%d] will promote index = %d", g.Id, index)
 
 		g.Promoting.Index = index
 		g.Promoting.State = models.ActionPreparing
-		if err := s.storeUpdateGroup(g); err != nil {
+		if err := s.storeUpdateGroup(product, g); err != nil {
 			return err
 		}
 
@@ -245,7 +280,7 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 
 	case models.ActionPreparing:
 
-		defer s.dirtyGroupCache(g.Id)
+		defer s.dirtyGroupCache(product, g.Id)
 
 		log.Warnf("group-[%d] resync to prepared", g.Id)
 
@@ -259,7 +294,7 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 			log.Warnf("group-[%d] resync-rollback to preparing, done", g.Id)
 			return err
 		}
-		if err := s.storeUpdateGroup(g); err != nil {
+		if err := s.storeUpdateGroup(product, g); err != nil {
 			return err
 		}
 
@@ -268,22 +303,22 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 	case models.ActionPrepared:
 
 		if p := ctx.sentinel; len(p.Servers) != 0 {
-			defer s.dirtySentinelCache()
+			defer s.dirtySentinelCache(product)
 			p.OutOfSync = true
-			if err := s.storeUpdateSentinel(p); err != nil {
+			if err := s.storeUpdateSentinel(product, p); err != nil {
 				return err
 			}
 			groupIds := map[int]bool{g.Id: true}
-			sentinel := redis.NewSentinel(s.config.ProductName, s.config.ProductAuth)
+			sentinel := redis.NewSentinel(product, s.config.TopomAuth)
 			if err := sentinel.RemoveGroups(p.Servers, s.config.SentinelClientTimeout.Duration(), groupIds); err != nil {
 				log.WarnErrorf(err, "group-[%d] remove sentinels failed", g.Id)
 			}
-			if s.ha.masters != nil {
-				delete(s.ha.masters, gid)
+			if s.products[product].ha.masters != nil {
+				delete(s.products[product].ha.masters, gid)
 			}
 		}
 
-		defer s.dirtyGroupCache(g.Id)
+		defer s.dirtyGroupCache(product, g.Id)
 
 		var index = g.Promoting.Index
 		var slice = make([]*models.GroupServer, 0, len(g.Servers))
@@ -303,12 +338,12 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 		g.Servers = slice
 		g.Promoting.Index = 0
 		g.Promoting.State = models.ActionFinished
-		if err := s.storeUpdateGroup(g); err != nil {
+		if err := s.storeUpdateGroup(product, g); err != nil {
 			return err
 		}
 
 		var master = slice[0].Addr
-		if c, err := redis.NewClient(master, s.config.ProductAuth, time.Second); err != nil {
+		if c, err := redis.NewClient(master, s.config.TopomAuth, time.Second); err != nil {
 			log.WarnErrorf(err, "create redis client to %s failed", master)
 		} else {
 			defer c.Close()
@@ -329,13 +364,13 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 			log.Warnf("group-[%d] resync to finished failed", g.Id)
 			return err
 		}
-		defer s.dirtyGroupCache(g.Id)
+		defer s.dirtyGroupCache(product, g.Id)
 
 		g = &models.Group{
 			Id:      g.Id,
 			Servers: g.Servers,
 		}
-		return s.storeUpdateGroup(g)
+		return s.storeUpdateGroup(product, g)
 
 	default:
 
@@ -344,8 +379,8 @@ func (s *Topom) GroupPromoteServer(gid int, addr string) error {
 	}
 }
 
-func (s *Topom) trySwitchGroupMaster(gid int, master string, cache *redis.InfoCache) error {
-	ctx, err := s.newContext()
+func (s *Topom) trySwitchGroupMaster(product string, gid int, master string, cache *redis.InfoCache) error {
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -375,19 +410,24 @@ func (s *Topom) trySwitchGroupMaster(gid int, master string, cache *redis.InfoCa
 	if index == 0 {
 		return nil
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	log.Warnf("group-[%d] will switch master to server[%d] = %s", g.Id, index, g.Servers[index].Addr)
 
 	g.Servers[0], g.Servers[index] = g.Servers[index], g.Servers[0]
 	g.OutOfSync = true
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) EnableReplicaGroups(gid int, addr string, value bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) EnableReplicaGroups(product string, productAuth string, gid int, addr string, value bool) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -404,20 +444,25 @@ func (s *Topom) EnableReplicaGroups(gid int, addr string, value bool) error {
 	if g.Promoting.State != models.ActionNothing {
 		return errors.Errorf("group-[%d] is promoting", g.Id)
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	if len(g.Servers) != 1 && ctx.isGroupInUse(g.Id) {
 		g.OutOfSync = true
 	}
 	g.Servers[index].ReplicaGroup = value
 
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) EnableReplicaGroupsAll(value bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) EnableReplicaGroupsAll(product string, productAuth string, value bool) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -426,7 +471,7 @@ func (s *Topom) EnableReplicaGroupsAll(value bool) error {
 		if g.Promoting.State != models.ActionNothing {
 			return errors.Errorf("group-[%d] is promoting", g.Id)
 		}
-		defer s.dirtyGroupCache(g.Id)
+		defer s.dirtyGroupCache(product, g.Id)
 
 		var dirty bool
 		for _, x := range g.Servers {
@@ -441,17 +486,22 @@ func (s *Topom) EnableReplicaGroupsAll(value bool) error {
 		if len(g.Servers) != 1 && ctx.isGroupInUse(g.Id) {
 			g.OutOfSync = true
 		}
-		if err := s.storeUpdateGroup(g); err != nil {
+		if err := s.storeUpdateGroup(product, g); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Topom) SyncCreateAction(addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SyncCreateAction(product string, productAuth string, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -467,17 +517,22 @@ func (s *Topom) SyncCreateAction(addr string) error {
 	if g.Servers[index].Action.State == models.ActionPending {
 		return errors.Errorf("server-[%s] action already exist", addr)
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	g.Servers[index].Action.Index = ctx.maxSyncActionIndex() + 1
 	g.Servers[index].Action.State = models.ActionPending
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) SyncRemoveAction(addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SyncRemoveAction(product string, productAuth string, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -493,17 +548,21 @@ func (s *Topom) SyncRemoveAction(addr string) error {
 	if g.Servers[index].Action.State == models.ActionNothing {
 		return errors.Errorf("server-[%s] action doesn't exist", addr)
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	g.Servers[index].Action.Index = 0
 	g.Servers[index].Action.State = models.ActionNothing
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) SyncActionPrepare() (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SyncActionPrepare(product string) (string, error) {
+	if !s.productExist(product) {
+		return "", ErrProductNotExist
+	}
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return "", err
 	}
@@ -524,19 +583,24 @@ func (s *Topom) SyncActionPrepare() (string, error) {
 	if g.Servers[index].Action.State != models.ActionPending {
 		return "", errors.Errorf("server-[%s] action state is invalid", addr)
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	log.Warnf("server-[%s] action prepare", addr)
 
 	g.Servers[index].Action.Index = 0
 	g.Servers[index].Action.State = models.ActionSyncing
-	return addr, s.storeUpdateGroup(g)
+	return addr, s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) SyncActionComplete(addr string, failed bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SyncActionComplete(product string, addr string, failed bool) error {
+	if !s.productExist(product) {
+		return ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -552,7 +616,7 @@ func (s *Topom) SyncActionComplete(addr string, failed bool) error {
 	if g.Servers[index].Action.State != models.ActionSyncing {
 		return nil
 	}
-	defer s.dirtyGroupCache(g.Id)
+	defer s.dirtyGroupCache(product, g.Id)
 
 	log.Warnf("server-[%s] action failed = %t", addr, failed)
 
@@ -563,13 +627,18 @@ func (s *Topom) SyncActionComplete(addr string, failed bool) error {
 		state = "synced_failed"
 	}
 	g.Servers[index].Action.State = state
-	return s.storeUpdateGroup(g)
+	return s.storeUpdateGroup(product, g)
 }
 
-func (s *Topom) newSyncActionExecutor(addr string) (func() error, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) newSyncActionExecutor(product string, addr string) (func() error, error) {
+	if !s.productExist(product) {
+		return nil, ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +657,7 @@ func (s *Topom) newSyncActionExecutor(addr string) (func() error, error) {
 		master = g.Servers[0].Addr
 	}
 	return func() error {
-		c, err := redis.NewClient(addr, s.config.ProductAuth, time.Minute*30)
+		c, err := redis.NewClient(addr, s.config.TopomAuth, time.Minute*30)
 		if err != nil {
 			log.WarnErrorf(err, "create redis client to %s failed", addr)
 			return err

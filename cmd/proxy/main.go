@@ -31,7 +31,7 @@ import (
 func main() {
 	const usage = `
 Usage:
-	codis-proxy [--ncpu=N [--max-ncpu=MAX]] [--config=CONF] [--log=FILE] [--log-level=LEVEL] [--host-admin=ADDR] [--host-proxy=ADDR] [--dashboard=ADDR|--zookeeper=ADDR [--zookeeper-auth=USR:PWD]|--etcd=ADDR [--etcd-auth=USR:PWD]|--filesystem=ROOT|--fillslots=FILE] [--ulimit=NLIMIT] [--pidfile=FILE] [--product_name=NAME] [--product_auth=AUTH] [--session_auth=AUTH]
+	codis-proxy [--ncpu=N [--max-ncpu=MAX]] [--config=CONF] [--log=FILE] [--log-level=LEVEL] [--host-admin=ADDR] [--host-proxy=ADDR] [--codis-topom=ADDR] [--topom-auth=AUTH] [--ulimit=NLIMIT] [--pidfile=FILE] [--product_name=NAME] [--product_auth=AUTH] [--session_auth=AUTH]
 	codis-proxy  --default-config
 	codis-proxy  --version
 
@@ -122,42 +122,11 @@ Options:
 		log.Warnf("option --host-proxy = %s", s)
 	}
 
-	var dashboard string
-	if s, ok := utils.Argument(d, "--dashboard"); ok {
-		dashboard = s
-		log.Warnf("option --dashboard = %s", s)
+	if s, ok := utils.Argument(d, "--codis-topom"); ok {
+		config.TopomAddr = s
 	}
-
-	var coordinator struct {
-		name string
-		addr string
-		auth string
-	}
-
-	switch {
-
-	case d["--zookeeper"] != nil:
-		coordinator.name = "zookeeper"
-		coordinator.addr = utils.ArgumentMust(d, "--zookeeper")
-		if d["--zookeeper-auth"] != nil {
-			coordinator.auth = utils.ArgumentMust(d, "--zookeeper-auth")
-		}
-
-	case d["--etcd"] != nil:
-		coordinator.name = "etcd"
-		coordinator.addr = utils.ArgumentMust(d, "--etcd")
-		if d["--etcd-auth"] != nil {
-			coordinator.auth = utils.ArgumentMust(d, "--etcd-auth")
-		}
-
-	case d["--filesystem"] != nil:
-		coordinator.name = "filesystem"
-		coordinator.addr = utils.ArgumentMust(d, "--filesystem")
-
-	}
-
-	if coordinator.name != "" {
-		log.Warnf("option --%s = %s", coordinator.name, coordinator.addr)
+	if s, ok := utils.Argument(d, "--topom-auth"); ok {
+		config.TopomAuth = s
 	}
 
 	var slots []*models.Slot
@@ -217,10 +186,8 @@ Options:
 	}()
 
 	switch {
-	case dashboard != "":
-		go AutoOnlineWithDashboard(s, dashboard)
-	case coordinator.name != "":
-		go AutoOnlineWithCoordinator(s, coordinator.name, coordinator.addr, coordinator.auth)
+	case config.TopomAddr != "":
+		go AutoOnlineWithTopom(s)
 	case slots != nil:
 		go AutoOnlineWithFillSlots(s, slots)
 	}
@@ -281,33 +248,12 @@ func AutoGOMAXPROCS(min, max int) {
 	}
 }
 
-func AutoOnlineWithDashboard(p *proxy.Proxy, dashboard string) {
+func AutoOnlineWithTopom(p *proxy.Proxy) {
 	for i := 0; i < 10; i++ {
 		if p.IsClosed() || p.IsOnline() {
 			return
 		}
-		if OnlineProxy(p, dashboard) {
-			return
-		}
-		time.Sleep(time.Second * 3)
-	}
-	log.Panicf("online proxy failed")
-}
-
-func AutoOnlineWithCoordinator(p *proxy.Proxy, name, addr, auth string) {
-	client, err := models.NewClient(name, addr, auth, time.Minute)
-	if err != nil {
-		log.PanicErrorf(err, "create '%s' client to '%s' failed", name, addr)
-	}
-	defer client.Close()
-	for i := 0; i < 30; i++ {
-		if p.IsClosed() || p.IsOnline() {
-			return
-		}
-		t, err := models.LoadTopom(client, p.Config().ProductName, false)
-		if err != nil {
-			log.WarnErrorf(err, "load & decode topom failed")
-		} else if t != nil && OnlineProxy(p, t.AdminAddr) {
+		if OnlineProxy(p) {
 			return
 		}
 		time.Sleep(time.Second * 3)
@@ -324,23 +270,24 @@ func AutoOnlineWithFillSlots(p *proxy.Proxy, slots []*models.Slot) {
 	}
 }
 
-func OnlineProxy(p *proxy.Proxy, dashboard string) bool {
-	client := topom.NewApiClient(dashboard)
-	t, err := client.Model()
-	if err != nil {
-		log.WarnErrorf(err, "rpc fetch model failed")
-		return false
-	}
-	if t.ProductName != p.Config().ProductName {
-		log.Panicf("unexcepted product name, got model =\n%s", t.Encode())
-	}
-	client.SetXAuth(p.Config().ProductName)
+func OnlineProxy(p *proxy.Proxy) bool {
+	for _, addr := range strings.Split(p.Config().TopomAddr, ",") {
+		client := topom.NewApiClient(addr)
+		_, err := client.Model()
+		if err != nil {
+			log.WarnErrorf(err, "rpc fetch model failed")
+			continue
+		}
+		client.SetXAuth(p.Config().TopomAuth)
 
-	if err := client.OnlineProxy(p.Model().AdminAddr); err != nil {
-		log.WarnErrorf(err, "rpc online proxy failed")
-		return false
-	} else {
-		log.Warnf("rpc online proxy seems OK")
-		return true
+		if err := client.OnlineProxy(p.Config().ProductName, p.Config().ProductAuth, p.Model().AdminAddr); err != nil {
+			log.WarnErrorf(err, "rpc online proxy failed")
+			return false
+		} else {
+			log.Warnf("rpc online proxy seems OK")
+			return true
+		}
 	}
+	log.Warnf("rpc online proxy failed, no accessible topom server %s", p.Config().TopomAddr)
+	return false
 }

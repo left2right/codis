@@ -21,12 +21,16 @@ const DefaultConfig = `
 #                                                #
 ##################################################
 
+# Set Codis topom addr & auth
+topom_addr = "127.0.0.1:18080"
+topom_auth = ""
+
 # Set Codis Product Name/Auth.
 product_name = "codis-demo"
 product_auth = ""
 
 # Set auth for client session
-#   1. product_auth is used for auth validation among codis-dashboard,
+#   1. product_auth is used for auth validation among codis-topom,
 #      codis-proxy and codis-server.
 #   2. session_auth is different from product_auth, it requires clients
 #      to issue AUTH <PASSWORD> before processing any other commands.
@@ -39,26 +43,11 @@ admin_addr = "0.0.0.0:11080"
 proto_type = "tcp4"
 proxy_addr = "0.0.0.0:19000"
 
-# Set jodis address & session timeout
-#   1. jodis_name is short for jodis_coordinator_name, only accept "zookeeper" & "etcd".
-#   2. jodis_addr is short for jodis_coordinator_addr
-#   3. jodis_auth is short for jodis_coordinator_auth, for zookeeper/etcd, "user:password" is accepted.
-#   4. proxy will be registered as node:
-#        if jodis_compatible = true (not suggested):
-#          /zk/codis/db_{PRODUCT_NAME}/proxy-{HASHID} (compatible with Codis2.0)
-#        or else
-#          /jodis/{PRODUCT_NAME}/proxy-{HASHID}
-jodis_name = ""
-jodis_addr = ""
-jodis_auth = ""
-jodis_timeout = "20s"
-jodis_compatible = false
-
 # Set datacenter of proxy.
 proxy_datacenter = ""
 
 # Set max number of alive sessions.
-proxy_max_clients = 1000
+proxy_max_clients = 10000
 
 # Set max offheap memory size. (0 to disable)
 proxy_max_offheap_size = "1024mb"
@@ -84,8 +73,8 @@ backend_max_pipeline = 20480
 backend_primary_only = false
 
 # Set backend parallel connections per server
-backend_primary_parallel = 1
-backend_replica_parallel = 1
+backend_primary_parallel = 100
+backend_replica_parallel = 100
 
 # Set backend tcp keepalive period. (0 to disable)
 backend_keepalive_period = "75s"
@@ -112,6 +101,9 @@ session_keepalive_period = "75s"
 # Set session to be sensitive to failures. Default is false, instead of closing socket, proxy will send an error response to client.
 session_break_on_failure = false
 
+# Set request responding slow latency, unit is microsecond
+request_respond_slower_than = 10000
+
 # Set metrics server (such as http://localhost:28000), proxy will report json formatted metrics to specified server in a predefined period.
 metrics_report_server = ""
 metrics_report_period = "1s"
@@ -130,18 +122,15 @@ metrics_report_statsd_prefix = ""
 `
 
 type Config struct {
+	TopomAddr string `toml:"topom_addr" json:"-"`
+	TopomAuth string `toml:"topom_auth" json:"-"`
+
 	ProtoType string `toml:"proto_type" json:"proto_type"`
 	ProxyAddr string `toml:"proxy_addr" json:"proxy_addr"`
 	AdminAddr string `toml:"admin_addr" json:"admin_addr"`
 
 	HostProxy string `toml:"-" json:"-"`
 	HostAdmin string `toml:"-" json:"-"`
-
-	JodisName       string            `toml:"jodis_name" json:"jodis_name"`
-	JodisAddr       string            `toml:"jodis_addr" json:"jodis_addr"`
-	JodisAuth       string            `toml:"jodis_auth" json:"jodis_auth"`
-	JodisTimeout    timesize.Duration `toml:"jodis_timeout" json:"jodis_timeout"`
-	JodisCompatible bool              `toml:"jodis_compatible" json:"jodis_compatible"`
 
 	ProductName string `toml:"product_name" json:"product_name"`
 	ProductAuth string `toml:"product_auth" json:"-"`
@@ -172,6 +161,7 @@ type Config struct {
 	SessionKeepAlivePeriod timesize.Duration `toml:"session_keepalive_period" json:"session_keepalive_period"`
 	SessionBreakOnFailure  bool              `toml:"session_break_on_failure" json:"session_break_on_failure"`
 
+	ReuestRespondSlowerThan       int64             `toml:"request_respond_slower_than" json:"request_respond_slower_than"`
 	MetricsReportServer           string            `toml:"metrics_report_server" json:"metrics_report_server"`
 	MetricsReportPeriod           timesize.Duration `toml:"metrics_report_period" json:"metrics_report_period"`
 	MetricsReportInfluxdbServer   string            `toml:"metrics_report_influxdb_server" json:"metrics_report_influxdb_server"`
@@ -220,14 +210,6 @@ func (c *Config) Validate() error {
 	}
 	if c.AdminAddr == "" {
 		return errors.New("invalid admin_addr")
-	}
-	if c.JodisName != "" {
-		if c.JodisAddr == "" {
-			return errors.New("invalid jodis_addr")
-		}
-		if c.JodisTimeout < 0 {
-			return errors.New("invalid jodis_timeout")
-		}
 	}
 	if c.ProductName == "" {
 		return errors.New("invalid product_name")
@@ -295,6 +277,9 @@ func (c *Config) Validate() error {
 		return errors.New("invalid session_keepalive_period")
 	}
 
+	if c.ReuestRespondSlowerThan < 0 {
+		return errors.New("invalid request_respond_slower_than")
+	}
 	if c.MetricsReportPeriod < 0 {
 		return errors.New("invalid metrics_report_period")
 	}

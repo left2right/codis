@@ -18,15 +18,17 @@ func init() {
 	}
 }
 
-const JodisDir = "/jodis"
+const (
+	CodisDir         = "/codis3"
+	CodisProductsDir = "/products/codis"
+	TopomRootPath    = "/topom"
+)
 
-func JodisPath(product string, token string) string {
-	return filepath.Join(JodisDir, product, fmt.Sprintf("proxy-%s", token))
+func ProductPath(product string) string {
+	return filepath.Join(CodisProductsDir, product)
 }
 
-const CodisDir = "/codis3"
-
-func ProductDir(product string) string {
+func ProductDataPath(product string) string {
 	return filepath.Join(CodisDir, product)
 }
 
@@ -71,12 +73,11 @@ func LoadTopom(client Client, product string, must bool) (*Topom, error) {
 }
 
 type Store struct {
-	client  Client
-	product string
+	client Client
 }
 
-func NewStore(client Client, product string) *Store {
-	return &Store{client, product}
+func NewStore(client Client) *Store {
+	return &Store{client}
 }
 
 func (s *Store) Close() error {
@@ -87,50 +88,22 @@ func (s *Store) Client() Client {
 	return s.client
 }
 
-func (s *Store) LockPath() string {
-	return LockPath(s.product)
+func (s *Store) Acquire(product string, topom *Topom) error {
+	return s.client.Create(LockPath(product), topom.Encode())
 }
 
-func (s *Store) SlotPath(sid int) string {
-	return SlotPath(s.product, sid)
+func (s *Store) Release(product string) error {
+	return s.client.Delete(LockPath(product), false)
 }
 
-func (s *Store) GroupDir() string {
-	return GroupDir(s.product)
+func (s *Store) LoadTopom(product string, must bool) (*Topom, error) {
+	return LoadTopom(s.client, product, must)
 }
 
-func (s *Store) ProxyDir() string {
-	return ProxyDir(s.product)
-}
-
-func (s *Store) GroupPath(gid int) string {
-	return GroupPath(s.product, gid)
-}
-
-func (s *Store) ProxyPath(token string) string {
-	return ProxyPath(s.product, token)
-}
-
-func (s *Store) SentinelPath() string {
-	return SentinelPath(s.product)
-}
-
-func (s *Store) Acquire(topom *Topom) error {
-	return s.client.Create(s.LockPath(), topom.Encode())
-}
-
-func (s *Store) Release() error {
-	return s.client.Delete(s.LockPath())
-}
-
-func (s *Store) LoadTopom(must bool) (*Topom, error) {
-	return LoadTopom(s.client, s.product, must)
-}
-
-func (s *Store) SlotMappings() ([]*SlotMapping, error) {
+func (s *Store) SlotMappings(product string) ([]*SlotMapping, error) {
 	slots := make([]*SlotMapping, MaxSlotNum)
 	for i := range slots {
-		m, err := s.LoadSlotMapping(i, false)
+		m, err := s.LoadSlotMapping(product, i, false)
 		if err != nil {
 			return nil, err
 		}
@@ -143,8 +116,8 @@ func (s *Store) SlotMappings() ([]*SlotMapping, error) {
 	return slots, nil
 }
 
-func (s *Store) LoadSlotMapping(sid int, must bool) (*SlotMapping, error) {
-	b, err := s.client.Read(s.SlotPath(sid), must)
+func (s *Store) LoadSlotMapping(product string, sid int, must bool) (*SlotMapping, error) {
+	b, err := s.client.Read(SlotPath(product, sid), must)
 	if err != nil || b == nil {
 		return nil, err
 	}
@@ -155,18 +128,50 @@ func (s *Store) LoadSlotMapping(sid int, must bool) (*SlotMapping, error) {
 	return m, nil
 }
 
-func (s *Store) UpdateSlotMapping(m *SlotMapping) error {
-	return s.client.Update(s.SlotPath(m.Id), m.Encode())
+func (s *Store) UpdateProduct(p *Product) error {
+	return s.client.Update(ProductPath(p.Name), p.Encode())
 }
 
-func (s *Store) ListGroup() (map[int]*Group, error) {
-	paths, err := s.client.List(s.GroupDir(), false)
+func (s *Store) DeleteProduct(product string) error {
+	return s.client.Delete(ProductPath(product), false)
+}
+
+func (s *Store) DeleteProductData(product string) error {
+	return s.client.Delete(ProductDataPath(product), true)
+}
+
+func (s *Store) UpdateSlotMapping(product string, m *SlotMapping) error {
+	return s.client.Update(SlotPath(product, m.Id), m.Encode())
+}
+
+func (s *Store) LoadProduct(product string, must bool) (*Product, error) {
+	b, err := s.client.Read(ProductPath(product), must)
+	if err != nil || b == nil {
+		return nil, err
+	}
+	p := &Product{}
+	if err := jsonDecode(p, b); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (s *Store) ListProduct() ([]string, error) {
+	products, err := s.client.List(CodisProductsDir, false)
+	if err != nil {
+		return nil, err
+	}
+	return products, nil
+}
+
+func (s *Store) ListGroup(product string) (map[int]*Group, error) {
+	groups, err := s.client.List(GroupDir(product), false)
 	if err != nil {
 		return nil, err
 	}
 	group := make(map[int]*Group)
-	for _, path := range paths {
-		b, err := s.client.Read(path, true)
+	for _, g := range groups {
+		b, err := s.client.Read(filepath.Join(GroupDir(product), g), true)
 		if err != nil {
 			return nil, err
 		}
@@ -179,8 +184,8 @@ func (s *Store) ListGroup() (map[int]*Group, error) {
 	return group, nil
 }
 
-func (s *Store) LoadGroup(gid int, must bool) (*Group, error) {
-	b, err := s.client.Read(s.GroupPath(gid), must)
+func (s *Store) LoadGroup(product string, gid int, must bool) (*Group, error) {
+	b, err := s.client.Read(GroupPath(product, gid), must)
 	if err != nil || b == nil {
 		return nil, err
 	}
@@ -191,21 +196,22 @@ func (s *Store) LoadGroup(gid int, must bool) (*Group, error) {
 	return g, nil
 }
 
-func (s *Store) UpdateGroup(g *Group) error {
-	return s.client.Update(s.GroupPath(g.Id), g.Encode())
+func (s *Store) UpdateGroup(product string, g *Group) error {
+	return s.client.Update(GroupPath(product, g.Id), g.Encode())
 }
 
-func (s *Store) DeleteGroup(gid int) error {
-	return s.client.Delete(s.GroupPath(gid))
+func (s *Store) DeleteGroup(product string, gid int) error {
+	return s.client.Delete(GroupPath(product, gid), false)
 }
 
-func (s *Store) ListProxy() (map[string]*Proxy, error) {
-	paths, err := s.client.List(s.ProxyDir(), false)
+func (s *Store) ListProxy(product string) (map[string]*Proxy, error) {
+	tokens, err := s.client.List(ProxyDir(product), false)
 	if err != nil {
 		return nil, err
 	}
 	proxy := make(map[string]*Proxy)
-	for _, path := range paths {
+	for _, token := range tokens {
+		path := filepath.Join(ProxyDir(product), token)
 		b, err := s.client.Read(path, true)
 		if err != nil {
 			return nil, err
@@ -219,8 +225,8 @@ func (s *Store) ListProxy() (map[string]*Proxy, error) {
 	return proxy, nil
 }
 
-func (s *Store) LoadProxy(token string, must bool) (*Proxy, error) {
-	b, err := s.client.Read(s.ProxyPath(token), must)
+func (s *Store) LoadProxy(product string, token string, must bool) (*Proxy, error) {
+	b, err := s.client.Read(ProxyPath(product, token), must)
 	if err != nil || b == nil {
 		return nil, err
 	}
@@ -231,16 +237,16 @@ func (s *Store) LoadProxy(token string, must bool) (*Proxy, error) {
 	return p, nil
 }
 
-func (s *Store) UpdateProxy(p *Proxy) error {
-	return s.client.Update(s.ProxyPath(p.Token), p.Encode())
+func (s *Store) UpdateProxy(product string, p *Proxy) error {
+	return s.client.Update(ProxyPath(product, p.Token), p.Encode())
 }
 
-func (s *Store) DeleteProxy(token string) error {
-	return s.client.Delete(s.ProxyPath(token))
+func (s *Store) DeleteProxy(product string, token string) error {
+	return s.client.Delete(ProxyPath(product, token), false)
 }
 
-func (s *Store) LoadSentinel(must bool) (*Sentinel, error) {
-	b, err := s.client.Read(s.SentinelPath(), must)
+func (s *Store) LoadSentinel(product string, must bool) (*Sentinel, error) {
+	b, err := s.client.Read(SentinelPath(product), must)
 	if err != nil || b == nil {
 		return nil, err
 	}
@@ -251,8 +257,8 @@ func (s *Store) LoadSentinel(must bool) (*Sentinel, error) {
 	return p, nil
 }
 
-func (s *Store) UpdateSentinel(p *Sentinel) error {
-	return s.client.Update(s.SentinelPath(), p.Encode())
+func (s *Store) UpdateSentinel(product string, p *Sentinel) error {
+	return s.client.Update(SentinelPath(product), p.Encode())
 }
 
 func ValidateProduct(name string) error {

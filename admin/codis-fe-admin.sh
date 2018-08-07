@@ -11,12 +11,13 @@ CODIS_CONF_DIR=$CODIS_ADMIN_DIR/../config
 CODIS_FE_BIN=$CODIS_BIN_DIR/codis-fe
 CODIS_FE_PID_FILE=$CODIS_BIN_DIR/codis-fe.pid
 CODIS_FE_ASSETS_DIR=$CODIS_BIN_DIR/assets
+CODIS_TOPOM_AUTH=""
 
 CODIS_FE_LOG_FILE=$CODIS_LOG_DIR/codis-fe.log
 CODIS_FE_DAEMON_FILE=$CODIS_LOG_DIR/codis-fe.out
 
-COORDINATOR_NAME="filesystem"
-COORDINATOR_ADDR="/tmp/codis"
+COORDINATOR_NAME="etcdv3"
+COORDINATOR_ADDR="127.0.0.1:2379"
 CODIS_FE_ADDR="0.0.0.0:9090"
 
 echo $CODIS_FE_CONF_FILE
@@ -36,11 +37,11 @@ start)
       fi
     fi
     nohup "$CODIS_FE_BIN" "--assets-dir=${CODIS_FE_ASSETS_DIR}" "--$COORDINATOR_NAME=$COORDINATOR_ADDR" \
-    "--log=$CODIS_FE_LOG_FILE" "--pidfile=$CODIS_FE_PID_FILE" "--log-level=INFO" "--listen=$CODIS_FE_ADDR" > "$CODIS_FE_DAEMON_FILE" 2>&1 < /dev/null &
+    "--log=$CODIS_FE_LOG_FILE" "--pidfile=$CODIS_FE_PID_FILE" "--log-level=INFO" "--topom-auth=$CODIS_TOPOM_AUTH" "--listen=$CODIS_FE_ADDR" > "$CODIS_FE_DAEMON_FILE" 2>&1 < /dev/null &
     ;;
 start-foreground)
     $CODIS_FE_BIN "--assets-dir=${CODIS_FE_ASSETS_DIR}" "--$COORDINATOR_NAME=$COORDINATOR_ADDR" \
-    "--log-level=DEBUG" "--listen=$CODIS_FE_ADDR"
+    "--log-level=DEBUG" "--topom-auth=$CODIS_TOPOM_AUTH" "--listen=$CODIS_FE_ADDR"
     ;;
 stop)
     echo "stopping codis-fe ... "

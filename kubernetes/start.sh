@@ -25,17 +25,17 @@ buildup)
     # 如果zookeeper不是在kurbernetes上，需要登陆上zk机器 执行 zkCli.sh -server {zk-addr}:2181 rmr /codis3/$product_name
     kubectl exec -it zk-0 -- zkCli.sh -server zk-0:2181 rmr /codis3/$product_name
     kubectl create -f codis-service.yaml
-    kubectl create -f codis-dashboard.yaml
-    while [ $(kubectl get pods -l app=codis-dashboard |grep Running |wc -l) != 1 ]; do sleep 1; done;
+    kubectl create -f codis-topom.yaml
+    while [ $(kubectl get pods -l app=codis-topom |grep Running |wc -l) != 1 ]; do sleep 1; done;
     kubectl create -f codis-proxy.yaml
     kubectl create -f codis-server.yaml
     servers=$(grep "replicas" codis-server.yaml |awk  '{print $2}')
     while [ $(kubectl get pods -l app=codis-server |grep Running |wc -l) != $servers ]; do sleep 1; done;
-    kubectl exec -it codis-server-0 -- codis-admin  --dashboard=codis-dashboard:18080 --rebalance --confirm
+    kubectl exec -it codis-server-0 -- codis-admin  --codis-topom=codis-topom:18080 --rebalance --confirm
     kubectl create -f codis-ha.yaml
     kubectl create -f codis-fe.yaml
     sleep 60
-    kubectl exec -it codis-dashboard-0 -- redis-cli -h codis-proxy -p 19000 PING
+    kubectl exec -it codis-topom-0 -- redis-cli -h codis-proxy -p 19000 PING
     if [ $? != 0 ]; then
         echo "buildup codis cluster with problems, plz check it!!"
     fi
@@ -57,20 +57,20 @@ scale-server)
     elif [ $cur -lt $des ]; then
         kubectl scale statefulsets codis-server --replicas=$des
         while [ $(kubectl get pods -l app=codis-server |grep Running |wc -l) != $2 ]; do sleep 1; done;
-        kubectl exec -it codis-server-0 -- codis-admin  --dashboard=codis-dashboard:18080 --rebalance --confirm
+        kubectl exec -it codis-server-0 -- codis-admin  --codis-topom=codis-topom:18080 --rebalance --confirm
     else
         echo "reduce the number of codis-server, does not support, please wait"
         # while [ $cur > $des ]
         # do
         #    cur=`expr $cur - 2`
         #    gid=$(expr $cur / 2 + 1)
-        #    kubectl exec -it codis-server-0 -- codis-admin  --dashboard=codis-dashboard:18080 --slot-action --create-some --gid-from=$gid --gid-to=1 --num-slots=1024
-        #    while [ $(kubectl exec -it codis-server-0 -- codis-admin  --dashboard=codis-dashboard:18080  --slots-status |grep "\"backend_addr_group_id\": $gid" |wc -l) != 0 ]; do echo "waiting slot migrating..."; sleep 1; done;
+        #    kubectl exec -it codis-server-0 -- codis-admin  --codis-topom=codis-topom:18080 --slot-action --create-some --gid-from=$gid --gid-to=1 --num-slots=1024
+        #    while [ $(kubectl exec -it codis-server-0 -- codis-admin  --codis-topom=codis-topom:18080  --slots-status |grep "\"backend_addr_group_id\": $gid" |wc -l) != 0 ]; do echo "waiting slot migrating..."; sleep 1; done;
         #    kubectl scale statefulsets codis-server --replicas=$cur
-        #    kubectl exec -it codis-server-0 -- codis-admin  --dashboard=codis-dashboard:18080 --remove-group --gid=$gid
+        #    kubectl exec -it codis-server-0 -- codis-admin  --codis-topom=codis-topom:18080 --remove-group --gid=$gid
         # done
         # kubectl scale statefulsets codis-server --replicas=$des
-        # kubectl exec -it codis-server-0 -- codis-admin  --dashboard=codis-dashboard:18080 --rebalance --confirm
+        # kubectl exec -it codis-server-0 -- codis-admin  --codis-topom=codis-topom:18080 --rebalance --confirm
     fi
     ;;
 

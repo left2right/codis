@@ -46,10 +46,15 @@ func (s *Topom) newRedisStats(addr string, timeout time.Duration, do func(addr s
 	}
 }
 
-func (s *Topom) RefreshRedisStats(timeout time.Duration) (*sync2.Future, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) RefreshRedisStats(product string, timeout time.Duration) (*sync2.Future, error) {
+	if !s.productExist(product) {
+		return nil, ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +70,7 @@ func (s *Topom) RefreshRedisStats(timeout time.Duration) (*sync2.Future, error) 
 	for _, g := range ctx.group {
 		for _, x := range g.Servers {
 			goStats(x.Addr, func(addr string) (*RedisStats, error) {
-				m, err := s.stats.redisp.InfoFull(addr)
+				m, err := s.products[product].stats.redisp.InfoFull(addr)
 				if err != nil {
 					return nil, err
 				}
@@ -75,16 +80,16 @@ func (s *Topom) RefreshRedisStats(timeout time.Duration) (*sync2.Future, error) 
 	}
 	for _, server := range ctx.sentinel.Servers {
 		goStats(server, func(addr string) (*RedisStats, error) {
-			c, err := s.ha.redisp.GetClient(addr)
+			c, err := s.products[product].ha.redisp.GetClient(addr)
 			if err != nil {
 				return nil, err
 			}
-			defer s.ha.redisp.PutClient(c)
+			defer s.products[product].ha.redisp.PutClient(c)
 			m, err := c.Info()
 			if err != nil {
 				return nil, err
 			}
-			sentinel := redis.NewSentinel(s.config.ProductName, s.config.ProductAuth)
+			sentinel := redis.NewSentinel(product, s.config.TopomAuth)
 			p, err := sentinel.MastersAndSlavesClient(c)
 			if err != nil {
 				return nil, err
@@ -97,9 +102,9 @@ func (s *Topom) RefreshRedisStats(timeout time.Duration) (*sync2.Future, error) 
 		for k, v := range fut.Wait() {
 			stats[k] = v.(*RedisStats)
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.stats.servers = stats
+		s.products[product].mu.Lock()
+		defer s.products[product].mu.Unlock()
+		s.products[product].stats.servers = stats
 	}()
 	return &fut, nil
 }
@@ -112,13 +117,13 @@ type ProxyStats struct {
 	Timeout  bool  `json:"timeout,omitempty"`
 }
 
-func (s *Topom) newProxyStats(p *models.Proxy, timeout time.Duration) *ProxyStats {
+func (s *Topom) newProxyStats(product string, productAuth string, p *models.Proxy, timeout time.Duration) *ProxyStats {
 	var ch = make(chan struct{})
 	stats := &ProxyStats{}
 
 	go func() {
 		defer close(ch)
-		x, err := s.newProxyClient(p).StatsSimple()
+		x, err := s.newProxyClient(product, productAuth, p).StatsSimple()
 		if err != nil {
 			stats.Error = rpc.NewRemoteError(err)
 		} else {
@@ -134,10 +139,15 @@ func (s *Topom) newProxyStats(p *models.Proxy, timeout time.Duration) *ProxyStat
 	}
 }
 
-func (s *Topom) RefreshProxyStats(timeout time.Duration) (*sync2.Future, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) RefreshProxyStats(product string, timeout time.Duration) (*sync2.Future, error) {
+	if !s.productExist(product) {
+		return nil, ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +155,7 @@ func (s *Topom) RefreshProxyStats(timeout time.Duration) (*sync2.Future, error) 
 	for _, p := range ctx.proxy {
 		fut.Add()
 		go func(p *models.Proxy) {
-			stats := s.newProxyStats(p, timeout)
+			stats := s.newProxyStats(product, ctx.auth, p, timeout)
 			stats.UnixTime = time.Now().Unix()
 			fut.Done(p.Token, stats)
 
@@ -153,7 +163,7 @@ func (s *Topom) RefreshProxyStats(timeout time.Duration) (*sync2.Future, error) 
 			case x == nil:
 			case x.Closed || x.Online:
 			default:
-				if err := s.OnlineProxy(p.AdminAddr); err != nil {
+				if err := s.OnlineProxy(product, ctx.auth, p.AdminAddr); err != nil {
 					log.WarnErrorf(err, "auto online proxy-[%s] failed", p.Token)
 				}
 			}
@@ -164,9 +174,9 @@ func (s *Topom) RefreshProxyStats(timeout time.Duration) (*sync2.Future, error) 
 		for k, v := range fut.Wait() {
 			stats[k] = v.(*ProxyStats)
 		}
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.stats.proxies = stats
+		s.products[product].mu.Lock()
+		defer s.products[product].mu.Unlock()
+		s.products[product].stats.proxies = stats
 	}()
 	return &fut, nil
 }

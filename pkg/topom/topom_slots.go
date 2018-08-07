@@ -16,10 +16,15 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/redis"
 )
 
-func (s *Topom) SlotCreateAction(sid int, gid int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotCreateAction(product string, productAuth string, sid int, gid int) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -42,18 +47,23 @@ func (s *Topom) SlotCreateAction(sid int, gid int) error {
 	if m.GroupId == gid {
 		return errors.Errorf("slot-[%d] already in group-[%d]", sid, gid)
 	}
-	defer s.dirtySlotsCache(m.Id)
+	defer s.dirtySlotsCache(product, m.Id)
 
 	m.Action.State = models.ActionPending
 	m.Action.Index = ctx.maxSlotActionIndex() + 1
 	m.Action.TargetId = g.Id
-	return s.storeUpdateSlotMapping(m)
+	return s.storeUpdateSlotMapping(product, m)
 }
 
-func (s *Topom) SlotCreateActionSome(groupFrom, groupTo int, numSlots int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotCreateActionSome(product string, productAuth string, groupFrom, groupTo int, numSlots int) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -88,22 +98,27 @@ func (s *Topom) SlotCreateActionSome(groupFrom, groupTo int, numSlots int) error
 		if err != nil {
 			return err
 		}
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		m.Action.State = models.ActionPending
 		m.Action.Index = ctx.maxSlotActionIndex() + 1
 		m.Action.TargetId = g.Id
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Topom) SlotCreateActionRange(beg, end int, gid int, must bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotCreateActionRange(product string, productAuth string, beg, end int, gid int, must bool) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -146,22 +161,27 @@ func (s *Topom) SlotCreateActionRange(beg, end int, gid int, must bool) error {
 		if err != nil {
 			return err
 		}
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		m.Action.State = models.ActionPending
 		m.Action.Index = ctx.maxSlotActionIndex() + 1
 		m.Action.TargetId = g.Id
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Topom) SlotRemoveAction(sid int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotRemoveAction(product string, productAuth string, sid int) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -176,23 +196,28 @@ func (s *Topom) SlotRemoveAction(sid int) error {
 	if m.Action.State != models.ActionPending {
 		return errors.Errorf("slot-[%d] action isn't pending", sid)
 	}
-	defer s.dirtySlotsCache(m.Id)
+	defer s.dirtySlotsCache(product, m.Id)
 
 	m = &models.SlotMapping{
 		Id:      m.Id,
 		GroupId: m.GroupId,
 	}
-	return s.storeUpdateSlotMapping(m)
+	return s.storeUpdateSlotMapping(product, m)
 }
 
-func (s *Topom) SlotActionPrepare() (int, bool, error) {
-	return s.SlotActionPrepareFilter(nil, nil)
+func (s *Topom) SlotActionPrepare(product string) (int, bool, error) {
+	return s.SlotActionPrepareFilter(product, nil, nil)
 }
 
-func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMapping) bool) (int, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotActionPrepareFilter(product string, accept, update func(m *models.SlotMapping) bool) (int, bool, error) {
+	if !s.productExist(product) {
+		return 0, false, ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return 0, false, err
 	}
@@ -221,7 +246,7 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 		if picked != nil {
 			return picked
 		}
-		if s.action.disabled.IsTrue() {
+		if s.products[product].action.disabled.IsTrue() {
 			return nil
 		}
 		return minActionIndex(func(m *models.SlotMapping) bool {
@@ -243,10 +268,10 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 
 	case models.ActionPending:
 
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		m.Action.State = models.ActionPreparing
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return 0, false, err
 		}
 
@@ -254,7 +279,7 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 
 	case models.ActionPreparing:
 
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		log.Warnf("slot-[%d] resync to prepared", m.Id)
 
@@ -266,7 +291,7 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 			log.Warnf("slot-[%d] resync-rollback to preparing, done", m.Id)
 			return 0, false, err
 		}
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return 0, false, err
 		}
 
@@ -274,7 +299,7 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 
 	case models.ActionPrepared:
 
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		log.Warnf("slot-[%d] resync to migrating", m.Id)
 
@@ -283,7 +308,7 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 			log.Warnf("slot-[%d] resync to migrating failed", m.Id)
 			return 0, false, err
 		}
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return 0, false, err
 		}
 
@@ -304,10 +329,15 @@ func (s *Topom) SlotActionPrepareFilter(accept, update func(m *models.SlotMappin
 	}
 }
 
-func (s *Topom) SlotActionComplete(sid int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotActionComplete(product string, sid int) error {
+	if !s.productExist(product) {
+		return ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -323,10 +353,10 @@ func (s *Topom) SlotActionComplete(sid int) error {
 
 	case models.ActionMigrating:
 
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		m.Action.State = models.ActionFinished
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return err
 		}
 
@@ -340,13 +370,13 @@ func (s *Topom) SlotActionComplete(sid int) error {
 			log.Warnf("slot-[%d] resync to finished failed", m.Id)
 			return err
 		}
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		m = &models.SlotMapping{
 			Id:      m.Id,
 			GroupId: m.Action.TargetId,
 		}
-		return s.storeUpdateSlotMapping(m)
+		return s.storeUpdateSlotMapping(product, m)
 
 	default:
 
@@ -355,10 +385,15 @@ func (s *Topom) SlotActionComplete(sid int) error {
 	}
 }
 
-func (s *Topom) newSlotActionExecutor(sid int) (func(db int) (remains int, nextdb int, err error), error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) newSlotActionExecutor(product string, sid int) (func(db int) (remains int, nextdb int, err error), error) {
+	if !s.productExist(product) {
+		return nil, ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +407,7 @@ func (s *Topom) newSlotActionExecutor(sid int) (func(db int) (remains int, nextd
 
 	case models.ActionMigrating:
 
-		if s.action.disabled.IsTrue() {
+		if s.products[product].action.disabled.IsTrue() {
 			return nil, nil
 		}
 		if ctx.isGroupPromoting(m.GroupId) {
@@ -385,18 +420,18 @@ func (s *Topom) newSlotActionExecutor(sid int) (func(db int) (remains int, nextd
 		from := ctx.getGroupMaster(m.GroupId)
 		dest := ctx.getGroupMaster(m.Action.TargetId)
 
-		s.action.executor.Incr()
+		s.products[product].action.executor.Incr()
 
 		return func(db int) (int, int, error) {
-			defer s.action.executor.Decr()
+			defer s.products[product].action.executor.Decr()
 			if from == "" {
 				return 0, -1, nil
 			}
-			c, err := s.action.redisp.GetClient(from)
+			c, err := s.products[product].action.redisp.GetClient(from)
 			if err != nil {
 				return 0, -1, err
 			}
-			defer s.action.redisp.PutClient(c)
+			defer s.products[product].action.redisp.PutClient(c)
 
 			if err := c.Select(db); err != nil {
 				return 0, -1, err
@@ -458,10 +493,15 @@ func (s *Topom) newSlotActionExecutor(sid int) (func(db int) (remains int, nextd
 	}
 }
 
-func (s *Topom) SlotsAssignGroup(slots []*models.SlotMapping) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotsAssignGroup(product string, productAuth string, slots []*models.SlotMapping) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -485,9 +525,9 @@ func (s *Topom) SlotsAssignGroup(slots []*models.SlotMapping) error {
 
 	for i, m := range slots {
 		if g := ctx.group[m.GroupId]; !g.OutOfSync {
-			defer s.dirtyGroupCache(g.Id)
+			defer s.dirtyGroupCache(product, g.Id)
 			g.OutOfSync = true
-			if err := s.storeUpdateGroup(g); err != nil {
+			if err := s.storeUpdateGroup(product, g); err != nil {
 				return err
 			}
 		}
@@ -497,21 +537,26 @@ func (s *Topom) SlotsAssignGroup(slots []*models.SlotMapping) error {
 	}
 
 	for _, m := range slots {
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		log.Warnf("slot-[%d] will be mapped to group-[%d]", m.Id, m.GroupId)
 
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return err
 		}
 	}
 	return s.resyncSlotMappings(ctx, slots...)
 }
 
-func (s *Topom) SlotsAssignOffline(slots []*models.SlotMapping) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotsAssignOffline(product string, productAuth string, slots []*models.SlotMapping) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -533,21 +578,26 @@ func (s *Topom) SlotsAssignOffline(slots []*models.SlotMapping) error {
 	}
 
 	for _, m := range slots {
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		log.Warnf("slot-[%d] will be mapped to group-[%d] (offline)", m.Id, m.GroupId)
 
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return err
 		}
 	}
 	return s.resyncSlotMappings(ctx, slots...)
 }
 
-func (s *Topom) SlotsRebalance(confirm bool) (map[int]int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) SlotsRebalance(product string, productAuth string, confirm bool) (map[int]int, error) {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return nil, err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -702,12 +752,12 @@ func (s *Topom) SlotsRebalance(confirm bool) (map[int]int, error) {
 		if err != nil {
 			return nil, err
 		}
-		defer s.dirtySlotsCache(m.Id)
+		defer s.dirtySlotsCache(product, m.Id)
 
 		m.Action.State = models.ActionPending
 		m.Action.Index = ctx.maxSlotActionIndex() + 1
 		m.Action.TargetId = plans[sid]
-		if err := s.storeUpdateSlotMapping(m); err != nil {
+		if err := s.storeUpdateSlotMapping(product, m); err != nil {
 			return nil, err
 		}
 	}

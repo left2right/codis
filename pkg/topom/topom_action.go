@@ -14,7 +14,7 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/sync2"
 )
 
-func (s *Topom) ProcessSlotAction() error {
+func (s *Topom) ProcessSlotAction(product string) error {
 	for s.IsOnline() {
 		var (
 			marks = make(map[int]bool)
@@ -39,7 +39,7 @@ func (s *Topom) ProcessSlotAction() error {
 		}
 		var parallel = math2.MaxInt(1, s.config.MigrationParallelSlots)
 		for parallel > len(plans) {
-			_, ok, err := s.SlotActionPrepareFilter(accept, update)
+			_, ok, err := s.SlotActionPrepareFilter(product, accept, update)
 			if err != nil {
 				return err
 			} else if !ok {
@@ -54,12 +54,12 @@ func (s *Topom) ProcessSlotAction() error {
 			fut.Add()
 			go func(sid int) {
 				log.Warnf("slot-[%d] process action", sid)
-				var err = s.processSlotAction(sid)
+				var err = s.processSlotAction(product, sid)
 				if err != nil {
 					status := fmt.Sprintf("[ERROR] Slot[%04d]: %s", sid, err)
-					s.action.progress.status.Store(status)
+					s.products[product].action.progress.status.Store(status)
 				} else {
-					s.action.progress.status.Store("")
+					s.products[product].action.progress.status.Store("")
 				}
 				fut.Done(strconv.Itoa(sid), err)
 			}(sid)
@@ -74,10 +74,10 @@ func (s *Topom) ProcessSlotAction() error {
 	return nil
 }
 
-func (s *Topom) processSlotAction(sid int) error {
+func (s *Topom) processSlotAction(product string, sid int) error {
 	var db int = 0
 	for s.IsOnline() {
-		if exec, err := s.newSlotActionExecutor(sid); err != nil {
+		if exec, err := s.newSlotActionExecutor(product, sid); err != nil {
 			return err
 		} else if exec == nil {
 			time.Sleep(time.Second)
@@ -89,12 +89,12 @@ func (s *Topom) processSlotAction(sid int) error {
 			log.Debugf("slot-[%d] action executor %d", sid, n)
 
 			if n == 0 && nextdb == -1 {
-				return s.SlotActionComplete(sid)
+				return s.SlotActionComplete(product, sid)
 			}
 			status := fmt.Sprintf("[OK] Slot[%04d]@DB[%d]=%d", sid, db, n)
-			s.action.progress.status.Store(status)
+			s.products[product].action.progress.status.Store(status)
 
-			if us := s.GetSlotActionInterval(); us != 0 {
+			if us := s.GetSlotActionInterval(product); us != 0 {
 				time.Sleep(time.Microsecond * time.Duration(us))
 			}
 			db = nextdb
@@ -103,16 +103,16 @@ func (s *Topom) processSlotAction(sid int) error {
 	return nil
 }
 
-func (s *Topom) ProcessSyncAction() error {
-	addr, err := s.SyncActionPrepare()
+func (s *Topom) ProcessSyncAction(product string) error {
+	addr, err := s.SyncActionPrepare(product)
 	if err != nil || addr == "" {
 		return err
 	}
 	log.Warnf("sync-[%s] process action", addr)
 
-	exec, err := s.newSyncActionExecutor(addr)
+	exec, err := s.newSyncActionExecutor(product, addr)
 	if err != nil || exec == nil {
 		return err
 	}
-	return s.SyncActionComplete(addr, exec() != nil)
+	return s.SyncActionComplete(product, addr, exec() != nil)
 }

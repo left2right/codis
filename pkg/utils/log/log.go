@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -621,4 +622,12 @@ func Printf(format string, v ...interface{}) {
 func Println(v ...interface{}) {
 	s := fmt.Sprintln(v...)
 	StdLog.output(1, nil, 0, s)
+}
+
+// LogPanic logs the panic reason and stack, then exit the process.
+// Commonly used with a `defer`.
+func LogPanic() {
+	if e := recover(); e != nil {
+		log.Fatalf("panic: %v, stack: %s", e, string(debug.Stack()))
+	}
 }

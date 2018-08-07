@@ -11,10 +11,15 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/sync2"
 )
 
-func (s *Topom) CreateProxy(addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) CreateProxy(product string, productAuth string, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -23,7 +28,7 @@ func (s *Topom) CreateProxy(addr string) error {
 	if err != nil {
 		return errors.Errorf("proxy@%s fetch model failed, %s", addr, err)
 	}
-	c := s.newProxyClient(p)
+	c := s.newProxyClient(product, productAuth, p)
 
 	if err := c.XPing(); err != nil {
 		return errors.Errorf("proxy@%s check xauth failed, %s", addr, err)
@@ -33,19 +38,24 @@ func (s *Topom) CreateProxy(addr string) error {
 	} else {
 		p.Id = ctx.maxProxyId() + 1
 	}
-	defer s.dirtyProxyCache(p.Token)
+	defer s.dirtyProxyCache(product, p.Token)
 
-	if err := s.storeCreateProxy(p); err != nil {
+	if err := s.storeCreateProxy(product, p); err != nil {
 		return err
 	} else {
 		return s.reinitProxy(ctx, p, c)
 	}
 }
 
-func (s *Topom) OnlineProxy(addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) OnlineProxy(product string, productAuth string, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -54,31 +64,36 @@ func (s *Topom) OnlineProxy(addr string) error {
 	if err != nil {
 		return errors.Errorf("proxy@%s fetch model failed", addr)
 	}
-	c := s.newProxyClient(p)
+	c := s.newProxyClient(product, productAuth, p)
 
 	if err := c.XPing(); err != nil {
 		return errors.Errorf("proxy@%s check xauth failed", addr)
 	}
-	defer s.dirtyProxyCache(p.Token)
+	defer s.dirtyProxyCache(product, p.Token)
 
 	if d := ctx.proxy[p.Token]; d != nil {
 		p.Id = d.Id
-		if err := s.storeUpdateProxy(p); err != nil {
+		if err := s.storeUpdateProxy(product, p); err != nil {
 			return err
 		}
 	} else {
 		p.Id = ctx.maxProxyId() + 1
-		if err := s.storeCreateProxy(p); err != nil {
+		if err := s.storeCreateProxy(product, p); err != nil {
 			return err
 		}
 	}
 	return s.reinitProxy(ctx, p, c)
 }
 
-func (s *Topom) RemoveProxy(token string, force bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) RemoveProxy(product string, productAuth string, token string, force bool) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -87,7 +102,7 @@ func (s *Topom) RemoveProxy(token string, force bool) error {
 	if err != nil {
 		return err
 	}
-	c := s.newProxyClient(p)
+	c := s.newProxyClient(product, productAuth, p)
 
 	if err := c.Shutdown(); err != nil {
 		log.WarnErrorf(err, "proxy-[%s] shutdown failed, force remove = %t", token, force)
@@ -95,15 +110,20 @@ func (s *Topom) RemoveProxy(token string, force bool) error {
 			return errors.Errorf("proxy-[%s] shutdown failed", p.Token)
 		}
 	}
-	defer s.dirtyProxyCache(p.Token)
+	defer s.dirtyProxyCache(product, p.Token)
 
-	return s.storeRemoveProxy(p)
+	return s.storeRemoveProxy(product, p)
 }
 
-func (s *Topom) ReinitProxy(token string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) ReinitProxy(product string, productAuth string, token string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -112,18 +132,18 @@ func (s *Topom) ReinitProxy(token string) error {
 	if err != nil {
 		return err
 	}
-	c := s.newProxyClient(p)
+	c := s.newProxyClient(product, productAuth, p)
 
 	return s.reinitProxy(ctx, p, c)
 }
 
-func (s *Topom) newProxyClient(p *models.Proxy) *proxy.ApiClient {
+func (s *Topom) newProxyClient(product string, productAuth string, p *models.Proxy) *proxy.ApiClient {
 	c := proxy.NewApiClient(p.AdminAddr)
-	c.SetXAuth(s.config.ProductName, s.config.ProductAuth, p.Token)
+	c.SetXAuth(product, productAuth, p.Token)
 	return c
 }
 
-func (s *Topom) reinitProxy(ctx *context, p *models.Proxy, c *proxy.ApiClient) error {
+func (s *Topom) reinitProxy(ctx *productContext, p *models.Proxy, c *proxy.ApiClient) error {
 	log.Warnf("proxy-[%s] reinit:\n%s", p.Token, p.Encode())
 	if err := c.FillSlots(ctx.toSlotSlice(ctx.slots, p)...); err != nil {
 		log.ErrorErrorf(err, "proxy-[%s] fillslots failed", p.Token)
@@ -140,11 +160,11 @@ func (s *Topom) reinitProxy(ctx *context, p *models.Proxy, c *proxy.ApiClient) e
 	return nil
 }
 
-func (s *Topom) resyncSlotMappingsByGroupId(ctx *context, gid int) error {
+func (s *Topom) resyncSlotMappingsByGroupId(ctx *productContext, gid int) error {
 	return s.resyncSlotMappings(ctx, ctx.getSlotMappingsByGroupId(gid)...)
 }
 
-func (s *Topom) resyncSlotMappings(ctx *context, slots ...*models.SlotMapping) error {
+func (s *Topom) resyncSlotMappings(ctx *productContext, slots ...*models.SlotMapping) error {
 	if len(slots) == 0 {
 		return nil
 	}
@@ -152,7 +172,7 @@ func (s *Topom) resyncSlotMappings(ctx *context, slots ...*models.SlotMapping) e
 	for _, p := range ctx.proxy {
 		fut.Add()
 		go func(p *models.Proxy) {
-			err := s.newProxyClient(p).FillSlots(ctx.toSlotSlice(slots, p)...)
+			err := s.newProxyClient(ctx.product, ctx.auth, p).FillSlots(ctx.toSlotSlice(slots, p)...)
 			if err != nil {
 				log.ErrorErrorf(err, "proxy-[%s] resync slots failed", p.Token)
 			}

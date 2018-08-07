@@ -8,7 +8,7 @@ function genXAuth(name) {
 
 function concatUrl(base, name) {
     if (name) {
-        return encodeURI(base + "?forward=" + name);
+        return encodeURI(base + "?product=" + name);
     } else {
         return encodeURI(base);
     }
@@ -277,7 +277,7 @@ function processProxyStats(codis_stats) {
     return {proxy_array: proxy_array, qps: qps, sessions: sessions};
 }
 
-function processSentinels(codis_stats, group_stats, codis_name) {
+function processSentinels(codis_stats, group_stats, product_name) {
     var ha = codis_stats.sentinels;
     var out_of_sync = false;
     var servers = [];
@@ -317,10 +317,10 @@ function processSentinels(codis_stats, group_stats, codis_name) {
                             if (name == undefined) {
                                 continue;
                             }
-                            if (name.lastIndexOf(codis_name) != 0) {
+                            if (name.lastIndexOf(product_name) != 0) {
                                 continue;
                             }
-                            if (name.lastIndexOf("-") != codis_name.length) {
+                            if (name.lastIndexOf("-") != product_name.length) {
                                 continue;
                             }
                             x.masters ++;
@@ -352,7 +352,7 @@ function processSentinels(codis_stats, group_stats, codis_name) {
                     var group_array = group_stats.group_array;
                     for (var t in group_array) {
                         var g = group_array[t];
-                        var d = s.sentinel[codis_name + "-" + g.id];
+                        var d = s.sentinel[product_name + "-" + g.id];
                         var runids = {};
                         if (d != undefined) {
                             if (d.master != undefined) {
@@ -582,7 +582,9 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         $scope.refresh_interval = 3;
 
         $scope.resetOverview = function () {
-            $scope.codis_name = "NA";
+            $scope.topom_auth = "";
+            $scope.product_name = "NA";
+            $scope.product_auth = "";
             $scope.codis_addr = "NA";
             $scope.codis_coord_name = "Coordinator";
             $scope.codis_coord_addr = "NA";
@@ -604,33 +606,48 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
         $scope.resetOverview();
 
-        $http.get('/list').then(function (resp) {
+        $http.get('/products').then(function (resp) {
             $scope.codis_list = resp.data;
         });
 
         $scope.selectCodisInstance = function (selected) {
-            if ($scope.codis_name == selected) {
+            if ($scope.product_name == selected) {
                 return;
             }
             $scope.resetOverview();
-            $scope.codis_name = selected;
+
+            $http.get('/topom-auth').then(function (resp) {
+                $scope.topom_auth = resp.data.replace(/\"/g,"");
+            });
+
+            $scope.product_name = selected;
+
+            var auth_url = concatUrl("/product-auth/", selected);
+            $http.get(auth_url).then(function (resp) {
+                if ($scope.product_name != selected) {
+                    return;
+                }
+                $scope.product_auth = resp.data.replace(/\"/g,"");
+            });
+
             var url = concatUrl("/topom", selected);
             $http.get(url).then(function (resp) {
-                if ($scope.codis_name != selected) {
+                if ($scope.product_name != selected) {
                     return;
                 }
                 var overview = resp.data;
                 $scope.codis_addr = overview.model.admin_addr;
                 $scope.codis_coord_name = "[" + overview.config.coordinator_name.charAt(0).toUpperCase() + overview.config.coordinator_name.slice(1) + "]";
                 $scope.codis_coord_addr = overview.config.coordinator_addr;
-                $scope.updateStats(overview.stats);
+                //console.log(overview.product_stats[selected]);
+                $scope.updateStats(overview.product_stats[selected]);
             });
         }
 
         $scope.updateStats = function (codis_stats) {
             var proxy_stats = processProxyStats(codis_stats);
             var group_stats = processGroupStats(codis_stats);
-            var sentinel = processSentinels(codis_stats, group_stats, $scope.codis_name);
+            var sentinel = processSentinels(codis_stats, group_stats, $scope.product_name);
 
             var merge = function(obj1, obj2) {
                 if (obj1 === null || obj2 === null) {
@@ -728,13 +745,15 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.refreshStats = function () {
-            var codis_name = $scope.codis_name;
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
             var codis_addr = $scope.codis_addr;
-            if (isValidInput(codis_name) && isValidInput(codis_addr)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/stats/" + xauth, codis_name);
+            if (isValidInput(product_name) && isValidInput(codis_addr)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/stats/" + xauth + "/" + product_name + "/" + product_auth, product_name);
                 $http.get(url).then(function (resp) {
-                    if ($scope.codis_name != codis_name) {
+                    if ($scope.product_name != product_name) {
                         return;
                     }
                     $scope.updateStats(resp.data);
@@ -743,10 +762,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.createProxy = function (proxy_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(proxy_addr)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/proxy/create/" + xauth + "/" + proxy_addr, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(proxy_addr)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/proxy/create/" + xauth + "/" + product_name + "/" + product_auth + "/" + proxy_addr, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -756,19 +777,21 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.removeProxy = function (proxy, force) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
                 var prefix = "";
                 if (force) {
                     prefix = "[FORCE] ";
                 }
                 alertAction(prefix + "Remove and Shutdown proxy: " + toJsonHtml(proxy), function () {
-                    var xauth = genXAuth(codis_name);
+                    var xauth = genXAuth(topom_auth);
                     var value = 0;
                     if (force) {
                         value = 1;
                     }
-                    var url = concatUrl("/api/topom/proxy/remove/" + xauth + "/" + proxy.token + "/" + value, codis_name);
+                    var url = concatUrl("/api/topom/proxy/remove/" + xauth + "/" + product_name + "/" + product_auth + "/" + proxy.token + "/" + value, product_name);
                     $http.put(url).then(function () {
                         $scope.refreshStats();
                     }, function (failedResp) {
@@ -779,8 +802,10 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.reinitProxy = function (proxy) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
                 var confused = [];
                 for (var i = 0; i < $scope.group_array.length; i ++) {
                     var group = $scope.group_array[i];
@@ -796,8 +821,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 }
                 if (confused.length == 0) {
                     alertAction("Reinit and Start proxy: " + toJsonHtml(proxy), function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/proxy/reinit/" + xauth + "/" + proxy.token, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/proxy/reinit/" + xauth + "/" + product_name + "/" + product_auth + "/" + proxy.token, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -811,8 +836,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                     prompts += "\n\n";
                     prompts += "Please fix these before resync proxy-[" + proxy.token + "].";
                     alertAction2("Reinit and Start proxy: " + prompts, function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/proxy/reinit/" + xauth + "/" + proxy.token, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/proxy/reinit/" + xauth + "/" + product_name + "/" + product_auth + "/" + proxy.token, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -824,10 +849,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.createGroup = function (group_id) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(group_id)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/group/create/" + xauth + "/" + group_id, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(group_id)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/group/create/" + xauth + "/" + product_name + "/" + product_auth + "/" + group_id, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -837,10 +864,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.removeGroup = function (group_id) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/group/remove/" + xauth + "/" + group_id, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/group/remove/" + xauth + "/" + product_name + "/" + product_auth + "/" + group_id, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -850,8 +879,10 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.resyncGroup = function (group) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
                 var o = {};
                 o.id = group.id;
                 o.servers = [];
@@ -864,8 +895,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 }
                 if (ha_real_master < 0) {
                     alertAction("Resync Group-[" + group.id + "]: " + toJsonHtml(o), function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/resync/" + xauth + "/" + group.id, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/resync/" + xauth + "/" + product_name + "/" + product_auth + "/" + group.id, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -877,8 +908,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                     prompts += "\n\n";
                     prompts += "HA: server[" + ha_real_master + "]=" + group.servers[ha_real_master].server + " should be the real group master, do you really want to resync group-[" + group.id + "] ??";
                     alertAction2("Resync Group-[" + group.id + "]: " + prompts, function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/resync/" + xauth + "/" + group.id, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/resync/" + xauth + "/" + product_name + "/" + product_auth + "/" + group.id, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -890,8 +921,10 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.resyncGroupAll = function() {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
                 var ha_real_master = -1;
                 var gids = [];
                 for (var i = 0; i < $scope.group_array.length; i ++) {
@@ -905,8 +938,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 }
                 if (ha_real_master < 0) {
                     alertAction("Resync All Groups: group-[" + gids + "]", function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/resync-all/" + xauth, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/resync-all/" + xauth + "/" + product_name + "/" + product_auth, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -915,8 +948,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                     });
                 } else {
                     alertAction2("Resync All Groups: group-[" + gids + "] (in conflict with HA)", function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/resync-all/" + xauth, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/resync-all/" + xauth + "/" + product_name + "/" + product_auth, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -928,8 +961,10 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.resyncSentinels = function () {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
                 var servers = [];
                 for (var i = 0; i < $scope.sentinel_servers.length; i ++) {
                     servers.push($scope.sentinel_servers[i].server);
@@ -949,8 +984,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 }
                 if (confused.length == 0) {
                     alertAction("Resync All Sentinels: " + toJsonHtml(servers), function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/sentinels/resync-all/" + xauth, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/sentinels/resync-all/" + xauth + "/" + product_name + "/" + product_auth, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -964,8 +999,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                     prompts += "\n\n";
                     prompts += "Please fix these before resync sentinels.";
                     alertAction2("Resync All Sentinels: " + prompts, function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/sentinels/resync-all/" + xauth, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/sentinels/resync-all/" + xauth + "/" + product_name + "/" + product_auth, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -977,10 +1012,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.addSentinel = function (server_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(server_addr)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/sentinels/add/" + xauth + "/" + server_addr, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(server_addr)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/sentinels/add/" + xauth + "/" + product_name + "/" + product_auth + "/" + server_addr, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -990,19 +1027,21 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.delSentinel = function (sentinel, force) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
                 var prefix = "";
                 if (force) {
                     prefix = "[FORCE] ";
                 }
                 alertAction(prefix + "Remove sentinel " + sentinel.server, function () {
-                    var xauth = genXAuth(codis_name);
+                    var xauth = genXAuth(topom_auth);
                     var value = 0;
                     if (force) {
                         value = 1;
                     }
-                    var url = concatUrl("/api/topom/sentinels/del/" + xauth + "/" + sentinel.server + "/" + value, codis_name);
+                    var url = concatUrl("/api/topom/sentinels/del/" + xauth + "/" + product_name + "/" + product_auth + "/" + sentinel.server + "/" + value, product_name);
                     $http.put(url).then(function () {
                         $scope.refreshStats();
                     }, function (failedResp) {
@@ -1013,9 +1052,11 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.addGroupServer = function (group_id, datacenter, server_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(group_id) && isValidInput(server_addr)) {
-                var xauth = genXAuth(codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(group_id) && isValidInput(server_addr)) {
+                var xauth = genXAuth(topom_auth);
                 if (datacenter == undefined) {
                     datacenter = "";
                 } else {
@@ -1025,7 +1066,7 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 if (datacenter != "") {
                     suffix = "/" + datacenter;
                 }
-                var url = concatUrl("/api/topom/group/add/" + xauth + "/" + group_id + "/" + server_addr + suffix, codis_name);
+                var url = concatUrl("/api/topom/group/add/" + xauth + "/" + product_name + "/" + product_auth + "/" + group_id + "/" + server_addr + suffix, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1035,8 +1076,10 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.delGroupServer = function (group, server_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(server_addr)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(server_addr)) {
                 var o = {};
                 o.id = group.id;
                 o.servers = [];
@@ -1049,8 +1092,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 }
                 if (ha_real_master < 0 || group.servers[ha_real_master].server != server_addr) {
                     alertAction("Remove server " + server_addr + " from Group-[" + group.id + "]: " + toJsonHtml(o), function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/del/" + xauth + "/" + group.id + "/" + server_addr, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/del/" + xauth + "/" + product_name + "/" + product_auth + "/" + group.id + "/" + server_addr, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -1062,8 +1105,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                     prompts += "\n\n";
                     prompts += "HA: server[" + ha_real_master + "]=" + server_addr + " should be the real group master, do you really want to remove it ??";
                     alertAction2("Remove server " + server_addr + " from Group-[" + group.id + "]: " + prompts, function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/del/" + xauth + "/" + group.id + "/" + server_addr, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/del/" + xauth + "/" + product_name + "/" + product_auth + "/" + group.id + "/" + server_addr, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -1076,8 +1119,10 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.promoteServer = function (group, server_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(server_addr)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(server_addr)) {
                 var o = {};
                 o.id = group.id;
                 o.servers = [];
@@ -1090,8 +1135,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                 }
                 if (ha_real_master < 0 || group.servers[ha_real_master].server == server_addr) {
                     alertAction("Promote server " + server_addr + " from Group-[" + group.id + "]: " + toJsonHtml(o), function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/promote/" + xauth + "/" + group.id + "/" + server_addr, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/promote/" + xauth + "/" + product_name + "/" + product_auth + "/" + group.id + "/" + server_addr, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -1103,8 +1148,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                     prompts += "\n\n";
                     prompts += "HA: server[" + ha_real_master + "]=" + group.servers[ha_real_master].server + " should be the real group master, do you really want to promote " + server_addr + " ??";
                     alertAction2("Promote server " + server_addr + " from Group-[" + group.id + "]: " + prompts, function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/group/promote/" + xauth + "/" + group.id + "/" + server_addr, codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/group/promote/" + xauth + "/" + product_name + "/" + product_auth + "/" + group.id + "/" + server_addr, product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {
@@ -1116,14 +1161,16 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.enableReplicaGroups = function (group_id, server_addr, replica_group) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(group_id) && isValidInput(server_addr)) {
-                var xauth = genXAuth(codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(group_id) && isValidInput(server_addr)) {
+                var xauth = genXAuth(topom_auth);
                 var value = 0;
                 if (replica_group) {
                     value = 1;
                 }
-                var url = concatUrl("/api/topom/group/replica-groups/" + xauth + "/" + group_id + "/" + server_addr + "/" + value, codis_name);
+                var url = concatUrl("/api/topom/group/replica-groups/" + xauth + "/" + product_name + "/" + product_auth + "/" + group_id + "/" + server_addr + "/" + value, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1133,10 +1180,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.enableReplicaGroupsAll = function (value) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/group/replica-groups-all/" + xauth + "/" + value, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/group/replica-groups-all/" + xauth + "/" + product_name + "/" + product_auth + "/" + value, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1146,10 +1195,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.createSyncAction = function (server_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(server_addr)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/group/action/create/" + xauth + "/" + server_addr, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(server_addr)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/group/action/create/" + xauth + "/" + product_name + "/" + product_auth + "/" + server_addr, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1159,10 +1210,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.removeSyncAction = function (server_addr) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(server_addr)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/group/action/remove/" + xauth + "/" + server_addr, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(server_addr)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/group/action/remove/" + xauth + "/" + product_name + "/" + product_auth + "/" + server_addr, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1172,11 +1225,13 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.createSlotActionSome = function (slots_num, group_from, group_to) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(slots_num) && isValidInput(group_from) && isValidInput(group_to)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(slots_num) && isValidInput(group_from) && isValidInput(group_to)) {
                 alertAction("Migrate " + slots_num + " Slots from Group-[" + group_from + "] to Group-[" + group_to + "]", function () {
-                    var xauth = genXAuth(codis_name);
-                    var url = concatUrl("/api/topom/slots/action/create-some/" + xauth + "/" + group_from + "/" + group_to + "/" + slots_num, codis_name);
+                    var xauth = genXAuth(topom_auth);
+                    var url = concatUrl("/api/topom/slots/action/create-some/" + xauth + "/" + product_name + "/" + product_auth + "/" + group_from + "/" + group_to + "/" + slots_num, product_name);
                     $http.put(url).then(function () {
                         $scope.refreshStats();
                     }, function (failedResp) {
@@ -1187,11 +1242,13 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.createSlotActionRange = function (slot_beg, slot_end, group_id) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(slot_beg) && isValidInput(slot_end) && isValidInput(group_id)) {
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(slot_beg) && isValidInput(slot_end) && isValidInput(group_id)) {
                 alertAction("Migrate Slots-[" + slot_beg + "," + slot_end + "] to Group-[" + group_id + "]", function () {
-                    var xauth = genXAuth(codis_name);
-                    var url = concatUrl("/api/topom/slots/action/create-range/" + xauth + "/" + slot_beg + "/" + slot_end + "/" + group_id, codis_name);
+                    var xauth = genXAuth(topom_auth);
+                    var url = concatUrl("/api/topom/slots/action/create-range/" + xauth + "/" + product_name + "/" + product_auth + "/" + slot_beg + "/" + slot_end + "/" + group_id, product_name);
                     $http.put(url).then(function () {
                         $scope.refreshStats();
                     }, function (failedResp) {
@@ -1202,10 +1259,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.removeSlotAction = function (slot_id) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name) && isValidInput(slot_id)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/slots/action/remove/" + xauth + "/" + slot_id, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name) && isValidInput(slot_id)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/slots/action/remove/" + xauth + "/" + product_name + "/" + product_auth + "/" + slot_id, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1215,10 +1274,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.updateSlotActionDisabled = function (value) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/slots/action/disabled/" + xauth + "/" + value, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/slots/action/disabled/" + xauth + "/" + product_name + "/" + product_auth + "/" + value, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1228,10 +1289,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.updateSlotActionInterval = function (value) {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/slots/action/interval/" + xauth + "/" + value, codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/slots/action/interval/" + xauth + "/" + product_name + "/" + product_auth + "/" + value, product_name);
                 $http.put(url).then(function () {
                     $scope.refreshStats();
                 }, function (failedResp) {
@@ -1241,10 +1304,12 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
         }
 
         $scope.rebalanceAllSlots = function() {
-            var codis_name = $scope.codis_name;
-            if (isValidInput(codis_name)) {
-                var xauth = genXAuth(codis_name);
-                var url = concatUrl("/api/topom/slots/rebalance/" + xauth + "/0", codis_name);
+            var topom_auth = $scope.topom_auth;
+            var product_name = $scope.product_name;
+            var product_auth = $scope.product_auth;
+            if (isValidInput(product_name)) {
+                var xauth = genXAuth(topom_auth);
+                var url = concatUrl("/api/topom/slots/rebalance/" + xauth + "/" + product_name + "/" + product_auth + "/0", product_name);
                 $http.put(url).then(function (resp) {
                     var actions = []
                     for (var i = 0; i < $scope.group_array.length; i ++) {
@@ -1271,8 +1336,8 @@ dashboard.controller('MainCodisCtrl', ['$scope', '$http', '$uibModal', '$timeout
                         actions.push("group-[" + g.id + "] <== " + slots);
                     }
                     alertAction("Preview of Auto-Rebalance: " + toJsonHtml(actions), function () {
-                        var xauth = genXAuth(codis_name);
-                        var url = concatUrl("/api/topom/slots/rebalance/" + xauth + "/1", codis_name);
+                        var xauth = genXAuth(topom_auth);
+                        var url = concatUrl("/api/topom/slots/rebalance/" + xauth + "/" + product_name + "/" + product_auth + "/1", product_name);
                         $http.put(url).then(function () {
                             $scope.refreshStats();
                         }, function (failedResp) {

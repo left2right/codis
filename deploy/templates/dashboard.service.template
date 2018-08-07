@@ -1,8 +1,8 @@
 [Unit]
 Description=Codis-[{PRODUCT_NAME}]@{ADMIN_PORT}
 [Service]
-ExecStart={BIN_PATH}/codis-dashboard \
-    --config={ETC_PATH}/{ADMIN_ADDR}/dashboard.toml --log={LOG_PATH}/{ADMIN_ADDR}/dashboard.log
+ExecStart={BIN_PATH}/codis-topom \
+    --config={ETC_PATH}/{ADMIN_ADDR}/topom.toml --log={LOG_PATH}/{ADMIN_ADDR}/dashboard.log
 Restart=always
 [Install]
 WantedBy=default.target

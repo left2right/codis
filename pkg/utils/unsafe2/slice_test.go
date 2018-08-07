@@ -1,4 +1,4 @@
-// Copyright 2016 CodisLabs. All Rights Reserved.
+// Copyright 2016 ForzaLabs. All Rights Reserved.
 // Licensed under the MIT (MIT-LICENSE.txt) license.
 
 package unsafe2
@@ -6,7 +6,7 @@ package unsafe2
 import (
 	"testing"
 
-	"github.com/CodisLabs/codis/pkg/utils/assert"
+	"ForzaDB/forza/pkg/utils/assert"
 )
 
 func TestMakeGoSlice(t *testing.T) {

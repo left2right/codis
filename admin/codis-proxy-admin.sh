@@ -16,7 +16,7 @@ CODIS_PROXY_DAEMON_FILE=$CODIS_LOG_DIR/codis-proxy.out
 
 CODIS_PROXY_CONF_FILE=$CODIS_CONF_DIR/proxy.toml
 
-CODIS_DASHBOARD_ADDR="127.0.0.1:18080"
+TOPOM_SERVER_ADDR="127.0.0.1:18080"
 
 echo $CODIS_PROXY_CONF_FILE
 
@@ -34,11 +34,11 @@ start)
          exit 0
       fi
     fi
-    nohup "$CODIS_PROXY_BIN" "--config=${CODIS_PROXY_CONF_FILE}" "--dashboard=${CODIS_DASHBOARD_ADDR}" \
+    nohup "$CODIS_PROXY_BIN" "--config=${CODIS_PROXY_CONF_FILE}" "--codis-topom=${TOPOM_SERVER_ADDR}" \
     "--log=$CODIS_PROXY_LOG_FILE" "--log-level=INFO" "--ncpu=4" "--pidfile=$CODIS_PROXY_PID_FILE" > "$CODIS_PROXY_DAEMON_FILE" 2>&1 < /dev/null &
     ;;
 start-foreground)
-    $CODIS_PROXY_BIN "--config=${CODIS_PROXY_CONF_FILE}" "--dashboard=${CODIS_DASHBOARD_ADDR}" \
+    $CODIS_PROXY_BIN "--config=${CODIS_PROXY_CONF_FILE}" "--codis-topom=${TOPOM_SERVER_ADDR}" \
     "--log-level=DEBUG" "--pidfile=$CODIS_PROXY_PID_FILE"
     ;;
 stop)

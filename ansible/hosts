@@ -1,4 +1,4 @@
-[codis-dashboard-servers]
+[codis-topom-servers]
 127.0.0.1
 [codis-proxy-servers]
 127.0.0.1

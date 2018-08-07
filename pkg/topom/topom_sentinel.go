@@ -14,10 +14,15 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/sync2"
 )
 
-func (s *Topom) AddSentinel(addr string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) AddSentinel(product string, productAuth string, addr string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -33,21 +38,26 @@ func (s *Topom) AddSentinel(addr string) error {
 		}
 	}
 
-	sentinel := redis.NewSentinel(s.config.ProductName, s.config.ProductAuth)
+	sentinel := redis.NewSentinel(product, ctx.auth)
 	if err := sentinel.FlushConfig(addr, s.config.SentinelClientTimeout.Duration()); err != nil {
 		return err
 	}
-	defer s.dirtySentinelCache()
+	defer s.dirtySentinelCache(product)
 
 	p.Servers = append(p.Servers, addr)
 	p.OutOfSync = true
-	return s.storeUpdateSentinel(p)
+	return s.storeUpdateSentinel(product, p)
 }
 
-func (s *Topom) DelSentinel(addr string, force bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) DelSentinel(product string, productAuth string, addr string, force bool) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
@@ -66,14 +76,14 @@ func (s *Topom) DelSentinel(addr string, force bool) error {
 	if len(slice) == len(p.Servers) {
 		return errors.Errorf("sentinel-[%s] not found", addr)
 	}
-	defer s.dirtySentinelCache()
+	defer s.dirtySentinelCache(product)
 
 	p.OutOfSync = true
-	if err := s.storeUpdateSentinel(p); err != nil {
+	if err := s.storeUpdateSentinel(product, p); err != nil {
 		return err
 	}
 
-	sentinel := redis.NewSentinel(s.config.ProductName, s.config.ProductAuth)
+	sentinel := redis.NewSentinel(product, ctx.auth)
 	if err := sentinel.RemoveGroupsAll([]string{addr}, s.config.SentinelClientTimeout.Duration()); err != nil {
 		log.WarnErrorf(err, "remove sentinel %s failed", addr)
 		if !force {
@@ -82,23 +92,29 @@ func (s *Topom) DelSentinel(addr string, force bool) error {
 	}
 
 	p.Servers = slice
-	return s.storeUpdateSentinel(p)
+	return s.storeUpdateSentinel(product, p)
 }
 
-func (s *Topom) SwitchMasters(masters map[int]string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Topom) SwitchMasters(product string, masters map[int]string) error {
 	if s.closed {
 		return ErrClosedTopom
 	}
-	s.ha.masters = masters
+
+	if !s.productExist(product) {
+		return ErrProductNotExist
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	s.products[product].ha.masters = masters
 
 	if len(masters) != 0 {
 		cache := &redis.InfoCache{
-			Auth: s.config.ProductAuth, Timeout: time.Millisecond * 100,
+			Auth: s.config.TopomAuth, Timeout: time.Millisecond * 100,
 		}
 		for gid, master := range masters {
-			if err := s.trySwitchGroupMaster(gid, master, cache); err != nil {
+			if err := s.trySwitchGroupMaster(product, gid, master, cache); err != nil {
 				log.WarnErrorf(err, "sentinel switch group master failed")
 			}
 		}
@@ -106,17 +122,17 @@ func (s *Topom) SwitchMasters(masters map[int]string) error {
 	return nil
 }
 
-func (s *Topom) rewatchSentinels(servers []string) {
-	if s.ha.monitor != nil {
-		s.ha.monitor.Cancel()
-		s.ha.monitor = nil
+func (s *Topom) rewatchSentinels(product string, servers []string) {
+	if s.products[product].ha.monitor != nil {
+		s.products[product].ha.monitor.Cancel()
+		s.products[product].ha.monitor = nil
 	}
 	if len(servers) == 0 {
-		s.ha.masters = nil
+		s.products[product].ha.masters = nil
 	} else {
-		s.ha.monitor = redis.NewSentinel(s.config.ProductName, s.config.ProductAuth)
-		s.ha.monitor.LogFunc = log.Warnf
-		s.ha.monitor.ErrFunc = log.WarnErrorf
+		s.products[product].ha.monitor = redis.NewSentinel(product, s.products[product].cache.product.Auth)
+		s.products[product].ha.monitor.LogFunc = log.Warnf
+		s.products[product].ha.monitor.ErrFunc = log.WarnErrorf
 		go func(p *redis.Sentinel) {
 			var trigger = make(chan struct{}, 1)
 			delayUntil := func(deadline time.Time) {
@@ -156,7 +172,7 @@ func (s *Topom) rewatchSentinels(servers []string) {
 							log.WarnErrorf(err, "fetch group masters failed")
 						} else {
 							if !p.IsCanceled() {
-								s.SwitchMasters(masters)
+								s.SwitchMasters(product, masters)
 							}
 							success += 1
 						}
@@ -164,23 +180,28 @@ func (s *Topom) rewatchSentinels(servers []string) {
 					}
 				}
 			}()
-		}(s.ha.monitor)
+		}(s.products[product].ha.monitor)
 	}
 	log.Warnf("rewatch sentinels = %v", servers)
 }
 
-func (s *Topom) ResyncSentinels() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) ResyncSentinels(product string, productAuth string) error {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return err
 	}
-	defer s.dirtySentinelCache()
+	defer s.dirtySentinelCache(product)
 
 	p := ctx.sentinel
 	p.OutOfSync = true
-	if err := s.storeUpdateSentinel(p); err != nil {
+	if err := s.storeUpdateSentinel(product, p); err != nil {
 		return err
 	}
 
@@ -193,7 +214,7 @@ func (s *Topom) ResyncSentinels() error {
 		ClientReconfigScript: s.config.SentinelClientReconfigScript,
 	}
 
-	sentinel := redis.NewSentinel(s.config.ProductName, s.config.ProductAuth)
+	sentinel := redis.NewSentinel(product, s.config.TopomAuth)
 	if err := sentinel.RemoveGroupsAll(p.Servers, s.config.SentinelClientTimeout.Duration()); err != nil {
 		log.WarnErrorf(err, "remove sentinels failed")
 	}
@@ -201,13 +222,13 @@ func (s *Topom) ResyncSentinels() error {
 		log.WarnErrorf(err, "resync sentinels failed")
 		return err
 	}
-	s.rewatchSentinels(p.Servers)
+	s.rewatchSentinels(product, p.Servers)
 
 	var fut sync2.Future
 	for _, p := range ctx.proxy {
 		fut.Add()
 		go func(p *models.Proxy) {
-			err := s.newProxyClient(p).SetSentinels(ctx.sentinel)
+			err := s.newProxyClient(product, productAuth, p).SetSentinels(ctx.sentinel)
 			if err != nil {
 				log.ErrorErrorf(err, "proxy-[%s] resync sentinel failed", p.Token)
 			}
@@ -224,5 +245,5 @@ func (s *Topom) ResyncSentinels() error {
 	}
 
 	p.OutOfSync = false
-	return s.storeUpdateSentinel(p)
+	return s.storeUpdateSentinel(product, p)
 }

@@ -5,6 +5,7 @@ package topom
 
 import (
 	"container/list"
+	"context"
 	"net"
 	"net/http"
 	"os"
@@ -23,32 +24,31 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/redis"
 	"github.com/CodisLabs/codis/pkg/utils/rpc"
 	"github.com/CodisLabs/codis/pkg/utils/sync2/atomic2"
+
+	"github.com/coreos/etcd/clientv3"
+	"github.com/coreos/etcd/embed"
 )
 
-type Topom struct {
-	mu sync.Mutex
+var (
+	ErrNotOnline       = errors.New("topom is not online")
+	ErrClosedTopom     = errors.New("use of closed topom")
+	ErrProductNotExist = errors.New("product not exist")
+)
 
-	xauth string
-	model *models.Topom
-	store *models.Store
+type product struct {
+	mu        sync.Mutex
+	productWg sync.WaitGroup
+	stop      bool
+
 	cache struct {
-		hooks list.List
-		slots []*models.SlotMapping
-		group map[int]*models.Group
-		proxy map[string]*models.Proxy
+		hooks   list.List
+		product *models.Product
+		slots   []*models.SlotMapping
+		group   map[int]*models.Group
+		proxy   map[string]*models.Proxy
 
 		sentinel *models.Sentinel
 	}
-
-	exit struct {
-		C chan struct{}
-	}
-
-	config *Config
-	online bool
-	closed bool
-
-	ladmin net.Listener
 
 	action struct {
 		redisp *redis.Pool
@@ -77,27 +77,59 @@ type Topom struct {
 	}
 }
 
-var ErrClosedTopom = errors.New("use of closed topom")
+type Topom struct {
+	mu sync.Mutex
 
-func New(client models.Client, config *Config) (*Topom, error) {
-	if err := config.Validate(); err != nil {
-		return nil, errors.Trace(err)
+	xauth    string
+	model    *models.Topom //take out
+	store    *models.Store
+	products map[string]*product
+
+	exit struct {
+		C chan struct{}
 	}
-	if err := models.ValidateProduct(config.ProductName); err != nil {
+
+	ladmin net.Listener
+
+	config *Config
+	online bool
+	closed bool
+
+	// Etcd and cluster informations.
+	id      uint64 // etcd server id.
+	etcdCfg *embed.Config
+
+	etcd  *embed.Etcd
+	cliv3 *clientv3.Client
+
+	isLeader         int64
+	leaderTopom      string
+	leaderLoopCtx    context.Context
+	leaderLoopCancel func()
+	leaderLoopWg     sync.WaitGroup
+}
+
+func New(config *Config) (*Topom, error) {
+	if err := config.Validate(); err != nil {
 		return nil, errors.Trace(err)
 	}
 	s := &Topom{}
 	s.config = config
+
+	s.config.CoordinatorName = "etcdv3"
+	s.config.CoordinatorAddr = s.config.AdvertiseClientUrls
+	etcdCfg, err := s.config.genEmbedEtcdConfig()
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	s.etcdCfg = etcdCfg
+
 	s.exit.C = make(chan struct{})
-	s.action.redisp = redis.NewPool(config.ProductAuth, config.MigrationTimeout.Duration())
-	s.action.progress.status.Store("")
 
-	s.ha.redisp = redis.NewPool("", time.Second*5)
-
+	// init model
 	s.model = &models.Topom{
 		StartTime: time.Now().String(),
 	}
-	s.model.ProductName = config.ProductName
 	s.model.Pid = os.Getpid()
 	s.model.Pwd, _ = os.Getwd()
 	if b, err := exec.Command("uname", "-a").Output(); err != nil {
@@ -105,13 +137,9 @@ func New(client models.Client, config *Config) (*Topom, error) {
 	} else {
 		s.model.Sys = strings.TrimSpace(string(b))
 	}
-	s.store = models.NewStore(client, config.ProductName)
-
-	s.stats.redisp = redis.NewPool(config.ProductAuth, time.Second*5)
-	s.stats.servers = make(map[string]*RedisStats)
-	s.stats.proxies = make(map[string]*ProxyStats)
 
 	if err := s.setup(config); err != nil {
+		log.WarnErrorf(err, "topom setup failed")
 		s.Close()
 		return nil, err
 	}
@@ -123,24 +151,33 @@ func New(client models.Client, config *Config) (*Topom, error) {
 	return s, nil
 }
 
-func (s *Topom) setup(config *Config) error {
-	if l, err := net.Listen("tcp", config.AdminAddr); err != nil {
-		return errors.Trace(err)
+func (s *Topom) Start(routines bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrClosedTopom
+	}
+	if s.online {
+		return nil
 	} else {
-		s.ladmin = l
-
-		x, err := utils.ReplaceUnspecifiedIP("tcp", l.Addr().String(), s.config.HostAdmin)
-		if err != nil {
-			return err
-		}
-		s.model.AdminAddr = x
+		s.online = true
 	}
 
-	s.model.Token = rpc.NewToken(
-		config.ProductName,
-		s.ladmin.Addr().String(),
-	)
-	s.xauth = rpc.NewXAuth(config.ProductName)
+	if !routines {
+		return nil
+	}
+
+	s.startLeaderLoop()
+	for s.leaderTopom == "" {
+		log.Warnf("topom leader is not set, need wait!!")
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	// if the topom is leader init products
+	/*if err := s.startProducts(); err != nil {
+		log.PanicErrorf(err, "topom start products error")
+		return errors.Trace(err)
+	}*/
 
 	return nil
 }
@@ -157,97 +194,13 @@ func (s *Topom) Close() error {
 	if s.ladmin != nil {
 		s.ladmin.Close()
 	}
-	for _, p := range []*redis.Pool{
-		s.action.redisp, s.stats.redisp, s.ha.redisp,
-	} {
-		if p != nil {
-			p.Close()
-		}
-	}
+	/*for name, _ := range s.products {
+		s.stopProduct(name)
+	}*/
+
+	s.stopLeaderLoop()
 
 	defer s.store.Close()
-
-	if s.online {
-		if err := s.store.Release(); err != nil {
-			log.ErrorErrorf(err, "store: release lock of %s failed", s.config.ProductName)
-			return errors.Errorf("store: release lock of %s failed", s.config.ProductName)
-		}
-	}
-	return nil
-}
-
-func (s *Topom) Start(routines bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return ErrClosedTopom
-	}
-	if s.online {
-		return nil
-	} else {
-		if err := s.store.Acquire(s.model); err != nil {
-			log.ErrorErrorf(err, "store: acquire lock of %s failed", s.config.ProductName)
-			return errors.Errorf("store: acquire lock of %s failed", s.config.ProductName)
-		}
-		s.online = true
-	}
-
-	if !routines {
-		return nil
-	}
-	ctx, err := s.newContext()
-	if err != nil {
-		return err
-	}
-	s.rewatchSentinels(ctx.sentinel.Servers)
-
-	go func() {
-		for !s.IsClosed() {
-			if s.IsOnline() {
-				w, _ := s.RefreshRedisStats(time.Second)
-				if w != nil {
-					w.Wait()
-				}
-			}
-			time.Sleep(time.Second)
-		}
-	}()
-
-	go func() {
-		for !s.IsClosed() {
-			if s.IsOnline() {
-				w, _ := s.RefreshProxyStats(time.Second)
-				if w != nil {
-					w.Wait()
-				}
-			}
-			time.Sleep(time.Second)
-		}
-	}()
-
-	go func() {
-		for !s.IsClosed() {
-			if s.IsOnline() {
-				if err := s.ProcessSlotAction(); err != nil {
-					log.WarnErrorf(err, "process slot action failed")
-					time.Sleep(time.Second * 5)
-				}
-			}
-			time.Sleep(time.Second)
-		}
-	}()
-
-	go func() {
-		for !s.IsClosed() {
-			if s.IsOnline() {
-				if err := s.ProcessSyncAction(); err != nil {
-					log.WarnErrorf(err, "process sync action failed")
-					time.Sleep(time.Second * 5)
-				}
-			}
-			time.Sleep(time.Second)
-		}
-	}()
 
 	return nil
 }
@@ -260,34 +213,246 @@ func (s *Topom) Model() *models.Topom {
 	return s.model
 }
 
-var ErrNotOnline = errors.New("topom is not online")
+// ID returns the unique etcd ID for this server in etcd cluster.
+func (s *Topom) ID() uint64 {
+	return s.id
+}
 
-func (s *Topom) newContext() (*context, error) {
+// Name returns the unique etcd Name for this server in etcd cluster.
+func (s *Topom) Name() string {
+	return s.config.Name
+}
+
+func (s *Topom) setup(config *Config) error {
+	if l, err := net.Listen("tcp", config.AdminAddr); err != nil {
+		return errors.Trace(err)
+	} else {
+		s.ladmin = l
+
+		x, err := utils.ReplaceUnspecifiedIP("tcp", l.Addr().String(), s.config.HostAdmin)
+		if err != nil {
+			return err
+		}
+		s.model.AdminAddr = x
+	}
+
+	s.model.Token = rpc.NewToken(
+		config.TopomAuth,
+		s.ladmin.Addr().String(),
+	)
+	s.xauth = rpc.NewXAuth(config.TopomAuth)
+
+	if err := s.startEtcd(); err != nil {
+		log.Errorf("topom start etcd  %v", err)
+		return errors.Trace(err)
+	}
+
+	cli, err := models.NewClient(config.CoordinatorName, config.CoordinatorAddr, config.CoordinatorAuth, time.Minute)
+	log.Infof("coordinator name %s addr %s", config.CoordinatorName, config.CoordinatorAddr)
+	if err != nil {
+		log.PanicErrorf(err, "create '%s' client to '%s' failed", config.CoordinatorName, config.CoordinatorAddr)
+		return errors.Trace(err)
+	}
+	s.store = models.NewStore(cli)
+
+	return nil
+}
+
+func (s *Topom) startProducts() error {
+	if !s.IsLeader() {
+		return nil
+	}
+	pdt, err := s.store.ListProduct()
+	if err != nil {
+		log.PanicErrorf(err, "get products from etcd error")
+		return err
+	}
+	s.products = make(map[string]*product, len(pdt))
+	for _, p := range pdt {
+		if err = s.startProduct(p); err != nil {
+			log.PanicErrorf(err, "start product p error")
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Topom) startProduct(product string) error {
+	if err := s.initProduct(product); err != nil {
+		return err
+	}
+	if err := s.runProduct(product); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Topom) stopProducts() error {
+	if !s.IsLeader() {
+		return nil
+	}
+	for product, _ := range s.products {
+		if err := s.stopProduct(product); err != nil {
+			log.ErrorErrorf(err, "start product p error")
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Topom) stopProduct(product string) error {
+	if _, ok := s.products[product]; !ok {
+		log.Warnf("product %s is not in topom cache", product)
+		return nil
+	}
+	for _, p := range []*redis.Pool{
+		s.products[product].action.redisp, s.products[product].stats.redisp, s.products[product].ha.redisp,
+	} {
+		if p != nil {
+			p.Close()
+		}
+	}
+	s.products[product].stop = true
+	s.products[product].productWg.Wait()
+	delete(s.products, product)
+	return nil
+}
+
+func (s *Topom) initProduct(name string) error {
+	if !s.IsLeader() {
+		return nil
+	}
 	if s.closed {
-		return nil, ErrClosedTopom
+		return ErrClosedTopom
 	}
 	if s.online {
-		if err := s.refillCache(); err != nil {
-			return nil, err
-		} else {
-			ctx := &context{}
-			ctx.slots = s.cache.slots
-			ctx.group = s.cache.group
-			ctx.proxy = s.cache.proxy
-			ctx.sentinel = s.cache.sentinel
-			ctx.hosts.m = make(map[string]net.IP)
-			ctx.method, _ = models.ParseForwardMethod(s.config.MigrationMethod)
-			return ctx, nil
+		if s.products == nil {
+			s.products = make(map[string]*product, 1)
 		}
+		p, ok := s.products[name]
+		if !ok {
+			s.products[name] = &product{}
+			p = s.products[name]
+		}
+
+		if err := s.refillProductCache(name); err != nil {
+			return err
+		}
+
+		p.action.redisp = redis.NewPool(s.config.TopomAuth, s.config.MigrationTimeout.Duration())
+		p.action.progress.status.Store("")
+
+		p.stats.redisp = redis.NewPool(s.config.TopomAuth, time.Second*5)
+		p.stats.servers = make(map[string]*RedisStats)
+		p.stats.proxies = make(map[string]*ProxyStats)
+
+		p.ha.redisp = redis.NewPool("", time.Second*5)
+		return nil
 	} else {
-		return nil, ErrNotOnline
+		return ErrNotOnline
 	}
 }
 
-func (s *Topom) Stats() (*Stats, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) runProduct(product string) error {
+	if !s.IsLeader() {
+		return nil
+	}
+
+	ctx, err := s.newProductContext(product)
+	if err != nil {
+		return err
+	}
+	s.rewatchSentinels(product, ctx.sentinel.Servers)
+	log.Warnf("product %s is running!", product)
+	go func() {
+		log.Warnf("product %s start RefreshRedisStats", product)
+		s.products[product].productWg.Add(1)
+		defer s.products[product].productWg.Done()
+		for !s.IsClosed() {
+			if s.IsOnline() {
+				w, _ := s.RefreshRedisStats(product, time.Second)
+				if w != nil {
+					w.Wait()
+				}
+			}
+			time.Sleep(time.Second)
+			if s.products[product].stop {
+				log.Warnf("product %s stop RefreshRedisStats", product)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		log.Warnf("product %s start RefreshProxyStats", product)
+		s.products[product].productWg.Add(1)
+		defer s.products[product].productWg.Done()
+		for !s.IsClosed() {
+			if s.IsOnline() {
+				w, _ := s.RefreshProxyStats(product, time.Second)
+				if w != nil {
+					w.Wait()
+				}
+			}
+			time.Sleep(time.Second)
+			if s.products[product].stop {
+				log.Warnf("product %s stop RefreshProxyStats", product)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		log.Warnf("product %s start ProcessSlotAction", product)
+		s.products[product].productWg.Add(1)
+		defer s.products[product].productWg.Done()
+		for !s.IsClosed() {
+			if s.IsOnline() {
+				if err := s.ProcessSlotAction(product); err != nil {
+					log.WarnErrorf(err, "process slot action failed")
+					time.Sleep(time.Second * 5)
+				}
+			}
+			time.Sleep(time.Second)
+			if s.products[product].stop {
+				log.Warnf("product %s stop ProcessSlotAction", product)
+				return
+			}
+		}
+	}()
+
+	go func() {
+		log.Warnf("product %s start ProcessSyncAction", product)
+		s.products[product].productWg.Add(1)
+		defer s.products[product].productWg.Done()
+		for !s.IsClosed() {
+			if s.IsOnline() {
+				if err := s.ProcessSyncAction(product); err != nil {
+					log.WarnErrorf(err, "process sync action failed")
+					time.Sleep(time.Second * 5)
+				}
+			}
+			time.Sleep(time.Second)
+			if s.products[product].stop {
+				log.Warnf("product %s stop ProcessSyncAction", product)
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (s *Topom) Stats(product string, productAuth string) (*Stats, error) {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return nil, err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	log.Infof("Stats productContext refill product %s", product)
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -301,30 +466,30 @@ func (s *Topom) Stats() (*Stats, error) {
 	stats.Group.Stats = map[string]*RedisStats{}
 	for _, g := range ctx.group {
 		for _, x := range g.Servers {
-			if v := s.stats.servers[x.Addr]; v != nil {
+			if v := s.products[product].stats.servers[x.Addr]; v != nil {
 				stats.Group.Stats[x.Addr] = v
 			}
 		}
 	}
 
 	stats.Proxy.Models = models.SortProxy(ctx.proxy)
-	stats.Proxy.Stats = s.stats.proxies
+	stats.Proxy.Stats = s.products[product].stats.proxies
 
-	stats.SlotAction.Interval = s.action.interval.Int64()
-	stats.SlotAction.Disabled = s.action.disabled.Bool()
-	stats.SlotAction.Progress.Status = s.action.progress.status.Load().(string)
-	stats.SlotAction.Executor = s.action.executor.Int64()
+	stats.SlotAction.Interval = s.products[product].action.interval.Int64()
+	stats.SlotAction.Disabled = s.products[product].action.disabled.Bool()
+	stats.SlotAction.Progress.Status = s.products[product].action.progress.status.Load().(string)
+	stats.SlotAction.Executor = s.products[product].action.executor.Int64()
 
 	stats.HA.Model = ctx.sentinel
 	stats.HA.Stats = map[string]*RedisStats{}
 	for _, server := range ctx.sentinel.Servers {
-		if v := s.stats.servers[server]; v != nil {
+		if v := s.products[product].stats.servers[server]; v != nil {
 			stats.HA.Stats[server] = v
 		}
 	}
 	stats.HA.Masters = make(map[string]string)
-	if s.ha.masters != nil {
-		for gid, addr := range s.ha.masters {
+	if s.products[product].ha.masters != nil {
+		for gid, addr := range s.products[product].ha.masters {
 			stats.HA.Masters[strconv.Itoa(gid)] = addr
 		}
 	}
@@ -380,29 +545,34 @@ func (s *Topom) IsClosed() bool {
 	return s.closed
 }
 
-func (s *Topom) GetSlotActionInterval() int {
-	return s.action.interval.AsInt()
+func (s *Topom) GetSlotActionInterval(product string) int {
+	return s.products[product].action.interval.AsInt()
 }
 
-func (s *Topom) SetSlotActionInterval(us int) {
+func (s *Topom) SetSlotActionInterval(product string, productAuth string, us int) {
 	us = math2.MinMaxInt(us, 0, 1000*1000)
-	s.action.interval.Set(int64(us))
-	log.Warnf("set action interval = %d", us)
+	s.products[product].action.interval.Set(int64(us))
+	log.Warnf("set product %s action interval = %d", product, us)
 }
 
-func (s *Topom) GetSlotActionDisabled() bool {
-	return s.action.disabled.Bool()
+func (s *Topom) GetSlotActionDisabled(product string) bool {
+	return s.products[product].action.disabled.Bool()
 }
 
-func (s *Topom) SetSlotActionDisabled(value bool) {
-	s.action.disabled.Set(value)
-	log.Warnf("set action disabled = %t", value)
+func (s *Topom) SetSlotActionDisabled(product string, productAuth string, value bool) {
+	s.products[product].action.disabled.Set(value)
+	log.Warnf("set product %s action disabled = %t", product, value)
 }
 
-func (s *Topom) Slots() ([]*models.Slot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ctx, err := s.newContext()
+func (s *Topom) Slots(product string, productAuth string) ([]*models.Slot, error) {
+	if err := s.productVerify(product, productAuth); err != nil {
+		return nil, err
+	}
+
+	s.products[product].mu.Lock()
+	defer s.products[product].mu.Unlock()
+
+	ctx, err := s.newProductContext(product)
 	if err != nil {
 		return nil, err
 	}
@@ -412,11 +582,16 @@ func (s *Topom) Slots() ([]*models.Slot, error) {
 func (s *Topom) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.newContext()
+	ps, err := s.store.ListProduct()
 	if err != nil {
 		return err
 	}
-	defer s.dirtyCacheAll()
+	for _, p := range ps {
+		if _, err = s.newProductContext(p); err != nil {
+			return err
+		}
+		defer s.dirtyCacheProduct(p)
+	}
 	return nil
 }
 
@@ -445,23 +620,28 @@ func (s *Topom) serveAdmin() {
 }
 
 type Overview struct {
-	Version string        `json:"version"`
-	Compile string        `json:"compile"`
-	Config  *Config       `json:"config,omitempty"`
-	Model   *models.Topom `json:"model,omitempty"`
-	Stats   *Stats        `json:"stats,omitempty"`
+	Version      string            `json:"version"`
+	Compile      string            `json:"compile"`
+	Config       *Config           `json:"config,omitempty"`
+	Model        *models.Topom     `json:"model,omitempty"`
+	ProductStats map[string]*Stats `json:"product_stats,omitempty"`
 }
 
 func (s *Topom) Overview() (*Overview, error) {
-	if stats, err := s.Stats(); err != nil {
-		return nil, err
-	} else {
-		return &Overview{
-			Version: utils.Version,
-			Compile: utils.Compile,
-			Config:  s.Config(),
-			Model:   s.Model(),
-			Stats:   stats,
-		}, nil
+	pstats := make(map[string]*Stats)
+	for _, p := range s.products {
+		if stats, err := s.Stats(p.cache.product.Name, p.cache.product.Auth); err != nil {
+			return nil, err
+		} else {
+			pstats[p.cache.product.Name] = stats
+		}
 	}
+
+	return &Overview{
+		Version:      utils.Version,
+		Compile:      utils.Compile,
+		Config:       s.Config(),
+		Model:        s.Model(),
+		ProductStats: pstats,
+	}, nil
 }

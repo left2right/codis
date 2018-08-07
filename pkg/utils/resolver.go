@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"golang.org/x/net/context"
+	"context"
 
 	"github.com/CodisLabs/codis/pkg/utils/errors"
 )

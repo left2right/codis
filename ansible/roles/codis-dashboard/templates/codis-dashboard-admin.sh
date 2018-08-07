@@ -8,14 +8,14 @@ CODIS_BIN_DIR=$CODIS_ADMIN_DIR/../bin
 CODIS_LOG_DIR=$CODIS_ADMIN_DIR/../log
 CODIS_CONF_DIR=$CODIS_ADMIN_DIR/../config
 
-CODIS_DASHBOARD_BIN=$CODIS_BIN_DIR/codis-dashboard
+CODIS_DASHBOARD_BIN=$CODIS_BIN_DIR/codis-topom
 CODIS_ADMIN_TOOL_BIN=$CODIS_BIN_DIR/codis-admin
-CODIS_DASHBOARD_PID_FILE=$CODIS_BIN_DIR/codis-dashboard.pid
+CODIS_DASHBOARD_PID_FILE=$CODIS_BIN_DIR/codis-topom.pid
 
-CODIS_DASHBOARD_LOG_FILE=$CODIS_LOG_DIR/codis-dashboard.log
-CODIS_DASHBOARD_DAEMON_FILE=$CODIS_LOG_DIR/codis-dashboard.out
+CODIS_DASHBOARD_LOG_FILE=$CODIS_LOG_DIR/codis-topom.log
+CODIS_DASHBOARD_DAEMON_FILE=$CODIS_LOG_DIR/codis-topom.out
 
-CODIS_DASHBOARD_CONF_FILE=$CODIS_CONF_DIR/dashboard.toml
+CODIS_DASHBOARD_CONF_FILE=$CODIS_CONF_DIR/topom.toml
 
 echo $CODIS_DASHBOARD_CONF_FILE
 
@@ -26,7 +26,7 @@ fi
 
 case $1 in
 start)
-    echo  "starting codis-dashboard ... "
+    echo  "starting codis-topom ... "
     if [ -f "$CODIS_DASHBOARD_PID_FILE" ]; then
       if kill -0 `cat "$CODIS_DASHBOARD_PID_FILE"` > /dev/null 2>&1; then
          echo $command already running as process `cat "$CODIS_DASHBOARD_PID_FILE"`.
@@ -41,10 +41,10 @@ start-foreground)
     "--log-level=DEBUG" "--pidfile=$CODIS_DASHBOARD_PID_FILE"
     ;;
 stop)
-    echo "stopping codis-dashboard ... "
+    echo "stopping codis-topom ... "
     if [ ! -f "$CODIS_DASHBOARD_PID_FILE" ]
     then
-      echo "no codis-dashboard to stop (could not find file $CODIS_DASHBOARD_PID_FILE)"
+      echo "no codis-topom to stop (could not find file $CODIS_DASHBOARD_PID_FILE)"
     else
       kill -2 $(cat "$CODIS_DASHBOARD_PID_FILE")
       echo STOPPED
@@ -52,10 +52,10 @@ stop)
     exit 0
     ;;
 stop-forced)
-    echo "stopping codis-dashboard ... "
+    echo "stopping codis-topom ... "
     if [ ! -f "$CODIS_DASHBOARD_PID_FILE" ]
     then
-      echo "no codis-dashboard to stop (could not find file $CODIS_DASHBOARD_PID_FILE)"
+      echo "no codis-topom to stop (could not find file $CODIS_DASHBOARD_PID_FILE)"
     else
       kill -9 $(cat "$CODIS_DASHBOARD_PID_FILE")
       rm "$CODIS_DASHBOARD_PID_FILE"

@@ -93,9 +93,11 @@ func (p *Proxy) startMetricsInfluxdb() {
 		}
 		fields := map[string]interface{}{
 			"ops_total":                stats.Ops.Total,
+			"ops_slows":                stats.Ops.Slows,
 			"ops_fails":                stats.Ops.Fails,
 			"ops_redis_errors":         stats.Ops.Redis.Errors,
 			"ops_qps":                  stats.Ops.QPS,
+			"ops_slow_qps":             stats.Ops.SlowQps,
 			"sessions_total":           stats.Sessions.Total,
 			"sessions_alive":           stats.Sessions.Alive,
 			"rusage_mem":               stats.Rusage.Mem,
@@ -149,9 +151,11 @@ func (p *Proxy) startMetricsStatsd() {
 
 		fields := map[string]interface{}{
 			"ops_total":                stats.Ops.Total,
+			"ops_slows":                stats.Ops.Slows,
 			"ops_fails":                stats.Ops.Fails,
 			"ops_redis_errors":         stats.Ops.Redis.Errors,
 			"ops_qps":                  stats.Ops.QPS,
+			"ops_slow_qps":             stats.Ops.SlowQps,
 			"sessions_total":           stats.Sessions.Total,
 			"sessions_alive":           stats.Sessions.Alive,
 			"rusage_mem":               stats.Rusage.Mem,

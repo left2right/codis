@@ -5,11 +5,11 @@
   roles:
     - common
 
-- name: Install codis-dashboard
-  hosts: codis-dashboard-servers
+- name: Install codis-topom
+  hosts: codis-topom-servers
   remote_user: codis
   roles:
-    - codis-dashboard
+    - codis-topom
 
 - name: Install codis-proxy
   hosts: codis-proxy-servers

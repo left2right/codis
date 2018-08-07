@@ -5,7 +5,9 @@ package topom
 
 import (
 	"fmt"
+	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,76 @@ import (
 	"github.com/CodisLabs/codis/pkg/utils/redis"
 	"github.com/CodisLabs/codis/pkg/utils/rpc"
 )
+
+const (
+	redirectorHeader      = "topom-Redirector"
+	productAuthTempPrefix = "product-auth-"
+)
+
+const (
+	errRedirectFailed      = "redirect failed"
+	errRedirectToNotLeader = "redirect to not leader"
+)
+
+type customReverseProxies struct {
+	urls   []url.URL
+	client *http.Client
+}
+
+func newCustomReverseProxies(t *Topom, urls []url.URL) *customReverseProxies {
+	tls, _ := t.config.ToTLSConfig()
+	dialClient := &http.Client{Transport: &http.Transport{
+		TLSClientConfig:   tls,
+		DisableKeepAlives: true,
+	}}
+	p := &customReverseProxies{
+		client: dialClient,
+	}
+
+	p.urls = append(p.urls, urls...)
+
+	return p
+}
+
+func (p *customReverseProxies) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	for _, url := range p.urls {
+		r.RequestURI = ""
+		r.URL.Host = url.Host
+		r.URL.Scheme = url.Scheme
+
+		resp, err := p.client.Do(r)
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+
+		b, err := ioutil.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			log.Error(err)
+			continue
+		}
+
+		copyHeader(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		if _, err := w.Write(b); err != nil {
+			log.Error(err)
+			continue
+		}
+
+		return
+	}
+
+	http.Error(w, errRedirectFailed, http.StatusInternalServerError)
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
 
 type apiServer struct {
 	topom *Topom
@@ -47,6 +119,40 @@ func newApiServer(t *Topom) http.Handler {
 		}
 		c.Next()
 	})
+	m.Use(func(w http.ResponseWriter, r *http.Request, c martini.Context) {
+		if !t.IsLeader() {
+			// Prevent more than one redirection.
+			if name := r.Header.Get(redirectorHeader); len(name) != 0 {
+				log.Errorf("redirect from %v, but %v is not leader", name, t.Name())
+				http.Error(w, errRedirectToNotLeader, http.StatusInternalServerError)
+				return
+			}
+
+			r.Header.Set(redirectorHeader, t.Name())
+
+			/*
+				leader, err := t.GetLeader()
+				log.Infof("redirect topom cluster leader is %s", t.leaderTopom)
+				if err != nil {
+					log.Errorf("get redirect leader %s err %v", t.leaderTopom, err)
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+			*/
+
+			log.Infof("redirect topom cluster leader is %s", t.leaderTopom)
+			//TODO need optimization, (first path segment in URL cannot contain colon)
+			urls, err := ParseUrls("http://" + t.leaderTopom)
+			if err != nil {
+				log.Errorf("get redirect leader urls %v err %v", urls, err)
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			newCustomReverseProxies(t, urls).ServeHTTP(w, r)
+		}
+		c.Next()
+	})
 	m.Use(gzip.All())
 	m.Use(func(c martini.Context, w http.ResponseWriter) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -66,57 +172,62 @@ func newApiServer(t *Topom) http.Handler {
 	r.Group("/topom", func(r martini.Router) {
 		r.Get("", api.Overview)
 		r.Get("/model", api.Model)
-		r.Get("/stats", api.StatsNoXAuth)
-		r.Get("/slots", api.SlotsNoXAuth)
+		//r.Get("/stats", api.StatsNoXAuth)
+		//r.Get("/slots", api.SlotsNoXAuth)
 	})
 	r.Group("/api/topom", func(r martini.Router) {
 		r.Get("/model", api.Model)
 		r.Get("/xping/:xauth", api.XPing)
-		r.Get("/stats/:xauth", api.Stats)
-		r.Get("/slots/:xauth", api.Slots)
+		r.Get("/stats/:xauth/:productname/:productauth", api.Stats)
+		r.Get("/slots/:xauth/:productname/:productauth", api.Slots)
 		r.Put("/reload/:xauth", api.Reload)
 		r.Put("/shutdown/:xauth", api.Shutdown)
 		r.Put("/loglevel/:xauth/:value", api.LogLevel)
+		r.Group("/product", func(r martini.Router) {
+			r.Put("/create/:xauth/:productname/:productauth", api.CreateProduct)
+			r.Put("/update/:xauth/:productname/:productauth", api.UpdateProduct)
+			r.Put("/remove/:xauth/:productname/:productauth/:force", api.RemoveProduct)
+		})
 		r.Group("/proxy", func(r martini.Router) {
-			r.Put("/create/:xauth/:addr", api.CreateProxy)
-			r.Put("/online/:xauth/:addr", api.OnlineProxy)
-			r.Put("/reinit/:xauth/:token", api.ReinitProxy)
-			r.Put("/remove/:xauth/:token/:force", api.RemoveProxy)
+			r.Put("/create/:xauth/:productname/:productauth/:addr", api.CreateProxy)
+			r.Put("/online/:xauth/:productname/:productauth/:addr", api.OnlineProxy)
+			r.Put("/reinit/:xauth/:productname/:productauth/:token", api.ReinitProxy)
+			r.Put("/remove/:xauth/:productname/:productauth/:token/:force", api.RemoveProxy)
 		})
 		r.Group("/group", func(r martini.Router) {
-			r.Put("/create/:xauth/:gid", api.CreateGroup)
-			r.Put("/remove/:xauth/:gid", api.RemoveGroup)
-			r.Put("/resync/:xauth/:gid", api.ResyncGroup)
-			r.Put("/resync-all/:xauth", api.ResyncGroupAll)
-			r.Put("/add/:xauth/:gid/:addr", api.GroupAddServer)
-			r.Put("/add/:xauth/:gid/:addr/:datacenter", api.GroupAddServer)
-			r.Put("/del/:xauth/:gid/:addr", api.GroupDelServer)
-			r.Put("/promote/:xauth/:gid/:addr", api.GroupPromoteServer)
-			r.Put("/replica-groups/:xauth/:gid/:addr/:value", api.EnableReplicaGroups)
-			r.Put("/replica-groups-all/:xauth/:value", api.EnableReplicaGroupsAll)
+			r.Put("/create/:xauth/:productname/:productauth/:gid", api.CreateGroup)
+			r.Put("/remove/:xauth/:productname/:productauth/:gid", api.RemoveGroup)
+			r.Put("/resync/:xauth/:productname/:productauth/:gid", api.ResyncGroup)
+			r.Put("/resync-all/:xauth/:productname/:productauth", api.ResyncGroupAll)
+			r.Put("/add/:xauth/:productname/:productauth/:gid/:addr", api.GroupAddServer)
+			r.Put("/add/:xauth/:productname/:productauth/:gid/:addr/:datacenter", api.GroupAddServer)
+			r.Put("/del/:xauth/:productname/:productauth/:gid/:addr", api.GroupDelServer)
+			r.Put("/promote/:xauth/:productname/:productauth/:gid/:addr", api.GroupPromoteServer)
+			r.Put("/replica-groups/:xauth/:productname/:productauth/:gid/:addr/:value", api.EnableReplicaGroups)
+			r.Put("/replica-groups-all/:xauth/:productname/:productauth/:value", api.EnableReplicaGroupsAll)
 			r.Group("/action", func(r martini.Router) {
-				r.Put("/create/:xauth/:addr", api.SyncCreateAction)
-				r.Put("/remove/:xauth/:addr", api.SyncRemoveAction)
+				r.Put("/create/:xauth/:productname/:productauth/:addr", api.SyncCreateAction)
+				r.Put("/remove/:xauth/:productname/:productauth/:addr", api.SyncRemoveAction)
 			})
 			r.Get("/info/:addr", api.InfoServer)
 		})
 		r.Group("/slots", func(r martini.Router) {
 			r.Group("/action", func(r martini.Router) {
-				r.Put("/create/:xauth/:sid/:gid", api.SlotCreateAction)
-				r.Put("/create-some/:xauth/:src/:dst/:num", api.SlotCreateActionSome)
-				r.Put("/create-range/:xauth/:beg/:end/:gid", api.SlotCreateActionRange)
-				r.Put("/remove/:xauth/:sid", api.SlotRemoveAction)
-				r.Put("/interval/:xauth/:value", api.SetSlotActionInterval)
-				r.Put("/disabled/:xauth/:value", api.SetSlotActionDisabled)
+				r.Put("/create/:xauth/:productname/:productauth/:sid/:gid", api.SlotCreateAction)
+				r.Put("/create-some/:xauth/:productname/:productauth/:src/:dst/:num", api.SlotCreateActionSome)
+				r.Put("/create-range/:xauth/:productname/:productauth/:beg/:end/:gid", api.SlotCreateActionRange)
+				r.Put("/remove/:xauth/:productname/:productauth/:sid", api.SlotRemoveAction)
+				r.Put("/interval/:xauth/:productname/:productauth/:value", api.SetSlotActionInterval)
+				r.Put("/disabled/:xauth/:productname/:productauth/:value", api.SetSlotActionDisabled)
 			})
-			r.Put("/assign/:xauth", binding.Json([]*models.SlotMapping{}), api.SlotsAssignGroup)
-			r.Put("/assign/:xauth/offline", binding.Json([]*models.SlotMapping{}), api.SlotsAssignOffline)
-			r.Put("/rebalance/:xauth/:confirm", api.SlotsRebalance)
+			r.Put("/assign/:xauth/:productname/:productauth", binding.Json([]*models.SlotMapping{}), api.SlotsAssignGroup)
+			r.Put("/assign/:xauth/:productname/:productauth/offline", binding.Json([]*models.SlotMapping{}), api.SlotsAssignOffline)
+			r.Put("/rebalance/:xauth/:productname/:productauth/:confirm", api.SlotsRebalance)
 		})
 		r.Group("/sentinels", func(r martini.Router) {
-			r.Put("/add/:xauth/:addr", api.AddSentinel)
-			r.Put("/del/:xauth/:addr/:force", api.DelSentinel)
-			r.Put("/resync-all/:xauth", api.ResyncSentinels)
+			r.Put("/add/:xauth/:productname/:productauth/:addr", api.AddSentinel)
+			r.Put("/del/:xauth/:productname/:productauth/:addr/:force", api.DelSentinel)
+			r.Put("/resync-all/:xauth/:productname/:productauth", api.ResyncSentinels)
 			r.Get("/info/:addr", api.InfoSentinel)
 			r.Get("/info/:addr/monitored", api.InfoSentinelMonitored)
 		})
@@ -154,22 +265,6 @@ func (s *apiServer) Model() (int, string) {
 	return rpc.ApiResponseJson(s.topom.Model())
 }
 
-func (s *apiServer) StatsNoXAuth() (int, string) {
-	if stats, err := s.topom.Stats(); err != nil {
-		return rpc.ApiResponseError(err)
-	} else {
-		return rpc.ApiResponseJson(stats)
-	}
-}
-
-func (s *apiServer) SlotsNoXAuth() (int, string) {
-	if slots, err := s.topom.Slots(); err != nil {
-		return rpc.ApiResponseError(err)
-	} else {
-		return rpc.ApiResponseJson(slots)
-	}
-}
-
 func (s *apiServer) XPing(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
@@ -179,18 +274,42 @@ func (s *apiServer) XPing(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) Stats(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
-		return s.StatsNoXAuth()
+		if stats, err := s.topom.Stats(product, productAuth); err != nil {
+			return rpc.ApiResponseError(err)
+		} else {
+			return rpc.ApiResponseJson(stats)
+		}
 	}
 }
 
 func (s *apiServer) Slots(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
-		return s.SlotsNoXAuth()
+		if slots, err := s.topom.Slots(product, productAuth); err != nil {
+			return rpc.ApiResponseError(err)
+		} else {
+			return rpc.ApiResponseJson(slots)
+		}
 	}
 }
 
@@ -203,6 +322,22 @@ func (s *apiServer) Reload(params martini.Params) (int, string) {
 	} else {
 		return rpc.ApiResponseJson("OK")
 	}
+}
+
+func (s *apiServer) parseProductName(params martini.Params) (string, error) {
+	product := params["productname"]
+	if product == "" {
+		return "", errors.New("missing product name")
+	}
+	return product, nil
+}
+
+func (s *apiServer) parseProductAuth(params martini.Params) (string, error) {
+	auth := params["productauth"]
+	if !strings.HasPrefix(auth, productAuthTempPrefix) {
+		return "", errors.New("encode product auth error")
+	}
+	return decodeProductAuth(auth), nil
 }
 
 func (s *apiServer) parseAddr(params martini.Params) (string, error) {
@@ -233,7 +368,78 @@ func (s *apiServer) parseInteger(params martini.Params, entry string) (int, erro
 	return v, nil
 }
 
+func (s *apiServer) CreateProduct(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.verifyXAuth(params); err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.topom.CreateProduct(product, productAuth); err != nil {
+		return rpc.ApiResponseError(err)
+	} else {
+		return rpc.ApiResponseJson("OK")
+	}
+}
+
+func (s *apiServer) UpdateProduct(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.verifyXAuth(params); err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.topom.UpdateProduct(product, productAuth); err != nil {
+		return rpc.ApiResponseError(err)
+	} else {
+		return rpc.ApiResponseJson("OK")
+	}
+}
+
+func (s *apiServer) RemoveProduct(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.verifyXAuth(params); err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	/*
+		force, err := s.parseInteger(params, "force")
+		if err != nil {
+			return rpc.ApiResponseError(err)
+		}
+	*/
+	if err := s.topom.RemoveProduct(product, productAuth); err != nil {
+		return rpc.ApiResponseError(err)
+	} else {
+		return rpc.ApiResponseJson("OK")
+	}
+}
+
 func (s *apiServer) CreateProxy(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -241,7 +447,7 @@ func (s *apiServer) CreateProxy(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.CreateProxy(addr); err != nil {
+	if err := s.topom.CreateProxy(product, productAuth, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -249,6 +455,14 @@ func (s *apiServer) CreateProxy(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) OnlineProxy(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -256,7 +470,7 @@ func (s *apiServer) OnlineProxy(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.OnlineProxy(addr); err != nil {
+	if err := s.topom.OnlineProxy(product, productAuth, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -264,6 +478,14 @@ func (s *apiServer) OnlineProxy(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) ReinitProxy(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -271,7 +493,7 @@ func (s *apiServer) ReinitProxy(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.ReinitProxy(token); err != nil {
+	if err := s.topom.ReinitProxy(product, productAuth, token); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -279,6 +501,14 @@ func (s *apiServer) ReinitProxy(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) RemoveProxy(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -290,7 +520,7 @@ func (s *apiServer) RemoveProxy(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.RemoveProxy(token, force != 0); err != nil {
+	if err := s.topom.RemoveProxy(product, productAuth, token, force != 0); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -298,6 +528,14 @@ func (s *apiServer) RemoveProxy(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) CreateGroup(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -305,7 +543,7 @@ func (s *apiServer) CreateGroup(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.CreateGroup(gid); err != nil {
+	if err := s.topom.CreateGroup(product, productAuth, gid); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -313,6 +551,14 @@ func (s *apiServer) CreateGroup(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) RemoveGroup(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -320,7 +566,7 @@ func (s *apiServer) RemoveGroup(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.RemoveGroup(gid); err != nil {
+	if err := s.topom.RemoveGroup(product, productAuth, gid); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -328,6 +574,14 @@ func (s *apiServer) RemoveGroup(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) ResyncGroup(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -335,7 +589,7 @@ func (s *apiServer) ResyncGroup(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.ResyncGroup(gid); err != nil {
+	if err := s.topom.ResyncGroup(product, productAuth, gid); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -343,10 +597,18 @@ func (s *apiServer) ResyncGroup(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) ResyncGroupAll(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.ResyncGroupAll(); err != nil {
+	if err := s.topom.ResyncGroupAll(product, productAuth); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -354,6 +616,14 @@ func (s *apiServer) ResyncGroupAll(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) GroupAddServer(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -366,7 +636,7 @@ func (s *apiServer) GroupAddServer(params martini.Params) (int, string) {
 		return rpc.ApiResponseError(err)
 	}
 	dc := params["datacenter"]
-	c, err := redis.NewClient(addr, s.topom.Config().ProductAuth, time.Second)
+	c, err := redis.NewClient(addr, productAuth, time.Second)
 	if err != nil {
 		log.WarnErrorf(err, "create redis client to %s failed", addr)
 		return rpc.ApiResponseError(err)
@@ -376,7 +646,7 @@ func (s *apiServer) GroupAddServer(params martini.Params) (int, string) {
 		log.WarnErrorf(err, "redis %s check slots-info failed", addr)
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.GroupAddServer(gid, dc, addr); err != nil {
+	if err := s.topom.GroupAddServer(product, productAuth, gid, dc, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -384,6 +654,14 @@ func (s *apiServer) GroupAddServer(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) GroupDelServer(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -395,7 +673,7 @@ func (s *apiServer) GroupDelServer(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.GroupDelServer(gid, addr); err != nil {
+	if err := s.topom.GroupDelServer(product, productAuth, gid, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -403,6 +681,14 @@ func (s *apiServer) GroupDelServer(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) GroupPromoteServer(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -414,7 +700,7 @@ func (s *apiServer) GroupPromoteServer(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.GroupPromoteServer(gid, addr); err != nil {
+	if err := s.topom.GroupPromoteServer(product, productAuth, gid, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -422,6 +708,14 @@ func (s *apiServer) GroupPromoteServer(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) EnableReplicaGroups(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -437,7 +731,7 @@ func (s *apiServer) EnableReplicaGroups(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.EnableReplicaGroups(gid, addr, n != 0); err != nil {
+	if err := s.topom.EnableReplicaGroups(product, productAuth, gid, addr, n != 0); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -445,6 +739,14 @@ func (s *apiServer) EnableReplicaGroups(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) EnableReplicaGroupsAll(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -452,7 +754,7 @@ func (s *apiServer) EnableReplicaGroupsAll(params martini.Params) (int, string) 
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.EnableReplicaGroupsAll(n != 0); err != nil {
+	if err := s.topom.EnableReplicaGroupsAll(product, productAuth, n != 0); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -460,6 +762,14 @@ func (s *apiServer) EnableReplicaGroupsAll(params martini.Params) (int, string) 
 }
 
 func (s *apiServer) AddSentinel(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -467,7 +777,7 @@ func (s *apiServer) AddSentinel(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.AddSentinel(addr); err != nil {
+	if err := s.topom.AddSentinel(product, productAuth, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -475,6 +785,14 @@ func (s *apiServer) AddSentinel(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) DelSentinel(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
@@ -486,7 +804,7 @@ func (s *apiServer) DelSentinel(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.DelSentinel(addr, force != 0); err != nil {
+	if err := s.topom.DelSentinel(product, productAuth, addr, force != 0); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -494,10 +812,18 @@ func (s *apiServer) DelSentinel(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) ResyncSentinels(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.ResyncSentinels(); err != nil {
+	if err := s.topom.ResyncSentinels(product, productAuth); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -509,7 +835,7 @@ func (s *apiServer) InfoServer(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	c, err := redis.NewClient(addr, s.topom.Config().ProductAuth, time.Second)
+	c, err := redis.NewClient(addr, s.topom.Config().TopomAuth, time.Second)
 	if err != nil {
 		log.WarnErrorf(err, "create redis client to %s failed", addr)
 		return rpc.ApiResponseError(err)
@@ -541,11 +867,15 @@ func (s *apiServer) InfoSentinel(params martini.Params) (int, string) {
 }
 
 func (s *apiServer) InfoSentinelMonitored(params martini.Params) (int, string) {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	addr, err := s.parseAddr(params)
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	sentinel := redis.NewSentinel(s.topom.Config().ProductName, s.topom.Config().ProductAuth)
+	sentinel := redis.NewSentinel(product, s.topom.Config().TopomAuth)
 	if info, err := sentinel.MastersAndSlaves(addr, s.topom.Config().SentinelClientTimeout.Duration()); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
@@ -557,11 +887,19 @@ func (s *apiServer) SyncCreateAction(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	addr, err := s.parseAddr(params)
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SyncCreateAction(addr); err != nil {
+	if err := s.topom.SyncCreateAction(product, productAuth, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -572,11 +910,19 @@ func (s *apiServer) SyncRemoveAction(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	addr, err := s.parseAddr(params)
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SyncRemoveAction(addr); err != nil {
+	if err := s.topom.SyncRemoveAction(product, productAuth, addr); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -587,6 +933,14 @@ func (s *apiServer) SlotCreateAction(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	sid, err := s.parseInteger(params, "sid")
 	if err != nil {
 		return rpc.ApiResponseError(err)
@@ -595,7 +949,7 @@ func (s *apiServer) SlotCreateAction(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SlotCreateAction(sid, gid); err != nil {
+	if err := s.topom.SlotCreateAction(product, productAuth, sid, gid); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -604,6 +958,14 @@ func (s *apiServer) SlotCreateAction(params martini.Params) (int, string) {
 
 func (s *apiServer) SlotCreateActionSome(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
 	groupFrom, err := s.parseInteger(params, "src")
@@ -618,7 +980,7 @@ func (s *apiServer) SlotCreateActionSome(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SlotCreateActionSome(groupFrom, groupTo, numSlots); err != nil {
+	if err := s.topom.SlotCreateActionSome(product, productAuth, groupFrom, groupTo, numSlots); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -627,6 +989,14 @@ func (s *apiServer) SlotCreateActionSome(params martini.Params) (int, string) {
 
 func (s *apiServer) SlotCreateActionRange(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
 	beg, err := s.parseInteger(params, "beg")
@@ -641,7 +1011,7 @@ func (s *apiServer) SlotCreateActionRange(params martini.Params) (int, string) {
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SlotCreateActionRange(beg, end, gid, true); err != nil {
+	if err := s.topom.SlotCreateActionRange(product, productAuth, beg, end, gid, true); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -652,11 +1022,19 @@ func (s *apiServer) SlotRemoveAction(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	sid, err := s.parseInteger(params, "sid")
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SlotRemoveAction(sid); err != nil {
+	if err := s.topom.SlotRemoveAction(product, productAuth, sid); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		return rpc.ApiResponseJson("OK")
@@ -694,11 +1072,19 @@ func (s *apiServer) SetSlotActionInterval(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	value, err := s.parseInteger(params, "value")
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
-		s.topom.SetSlotActionInterval(value)
+		s.topom.SetSlotActionInterval(product, productAuth, value)
 		return rpc.ApiResponseJson("OK")
 	}
 }
@@ -707,11 +1093,19 @@ func (s *apiServer) SetSlotActionDisabled(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	value, err := s.parseInteger(params, "value")
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
-		s.topom.SetSlotActionDisabled(value != 0)
+		s.topom.SetSlotActionDisabled(product, productAuth, value != 0)
 		return rpc.ApiResponseJson("OK")
 	}
 }
@@ -720,7 +1114,15 @@ func (s *apiServer) SlotsAssignGroup(slots []*models.SlotMapping, params martini
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SlotsAssignGroup(slots); err != nil {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.topom.SlotsAssignGroup(product, productAuth, slots); err != nil {
 		return rpc.ApiResponseError(err)
 	}
 	return rpc.ApiResponseJson("OK")
@@ -730,7 +1132,15 @@ func (s *apiServer) SlotsAssignOffline(slots []*models.SlotMapping, params marti
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if err := s.topom.SlotsAssignOffline(slots); err != nil {
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	if err := s.topom.SlotsAssignOffline(product, productAuth, slots); err != nil {
 		return rpc.ApiResponseError(err)
 	}
 	return rpc.ApiResponseJson("OK")
@@ -740,11 +1150,19 @@ func (s *apiServer) SlotsRebalance(params martini.Params) (int, string) {
 	if err := s.verifyXAuth(params); err != nil {
 		return rpc.ApiResponseError(err)
 	}
+	product, err := s.parseProductName(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
+	productAuth, err := s.parseProductAuth(params)
+	if err != nil {
+		return rpc.ApiResponseError(err)
+	}
 	confirm, err := s.parseInteger(params, "confirm")
 	if err != nil {
 		return rpc.ApiResponseError(err)
 	}
-	if plans, err := s.topom.SlotsRebalance(confirm != 0); err != nil {
+	if plans, err := s.topom.SlotsRebalance(product, productAuth, confirm != 0); err != nil {
 		return rpc.ApiResponseError(err)
 	} else {
 		m := make(map[string]int)
@@ -772,6 +1190,14 @@ func (c *ApiClient) encodeURL(format string, args ...interface{}) string {
 	return rpc.EncodeURL(c.addr, format, args...)
 }
 
+func encodeProductAuth(auth string) string {
+	return productAuthTempPrefix + auth
+}
+
+func decodeProductAuth(auth string) string {
+	return auth[len(productAuthTempPrefix):]
+}
+
 func (c *ApiClient) Overview() (*Overview, error) {
 	url := c.encodeURL("/topom")
 	var o = &Overview{}
@@ -795,8 +1221,8 @@ func (c *ApiClient) XPing() error {
 	return rpc.ApiGetJson(url, nil)
 }
 
-func (c *ApiClient) Stats() (*Stats, error) {
-	url := c.encodeURL("/api/topom/stats/%s", c.xauth)
+func (c *ApiClient) Stats(product string, productAuth string) (*Stats, error) {
+	url := c.encodeURL("/api/topom/stats/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
 	stats := &Stats{}
 	if err := rpc.ApiGetJson(url, stats); err != nil {
 		return nil, err
@@ -804,8 +1230,8 @@ func (c *ApiClient) Stats() (*Stats, error) {
 	return stats, nil
 }
 
-func (c *ApiClient) Slots() ([]*models.Slot, error) {
-	url := c.encodeURL("/api/topom/slots/%s", c.xauth)
+func (c *ApiClient) Slots(product string, productAuth string) ([]*models.Slot, error) {
+	url := c.encodeURL("/api/topom/slots/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
 	slots := []*models.Slot{}
 	if err := rpc.ApiGetJson(url, &slots); err != nil {
 		return nil, err
@@ -828,167 +1254,186 @@ func (c *ApiClient) Shutdown() error {
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) CreateProxy(addr string) error {
-	url := c.encodeURL("/api/topom/proxy/create/%s/%s", c.xauth, addr)
+func (c *ApiClient) CreateProduct(product string, productAuth string) error {
+	url := c.encodeURL("/api/topom/product/create/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) OnlineProxy(addr string) error {
-	url := c.encodeURL("/api/topom/proxy/online/%s/%s", c.xauth, addr)
+func (c *ApiClient) UpdateProduct(product string, productAuth string) error {
+	url := c.encodeURL("/api/topom/product/update/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) ReinitProxy(token string) error {
-	url := c.encodeURL("/api/topom/proxy/reinit/%s/%s", c.xauth, token)
-	return rpc.ApiPutJson(url, nil, nil)
-}
-
-func (c *ApiClient) RemoveProxy(token string, force bool) error {
+func (c *ApiClient) RemoveProduct(product string, productAuth string, force bool) error {
 	var value int
 	if force {
 		value = 1
 	}
-	url := c.encodeURL("/api/topom/proxy/remove/%s/%s/%d", c.xauth, token, value)
+	url := c.encodeURL("/api/topom/product/remove/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), value)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) CreateGroup(gid int) error {
-	url := c.encodeURL("/api/topom/group/create/%s/%d", c.xauth, gid)
+func (c *ApiClient) CreateProxy(product string, productAuth string, addr string) error {
+	url := c.encodeURL("/api/topom/proxy/create/%s/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth), addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) RemoveGroup(gid int) error {
-	url := c.encodeURL("/api/topom/group/remove/%s/%d", c.xauth, gid)
+func (c *ApiClient) OnlineProxy(product string, productAuth string, addr string) error {
+	url := c.encodeURL("/api/topom/proxy/online/%s/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth), addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) ResyncGroup(gid int) error {
-	url := c.encodeURL("/api/topom/group/resync/%s/%d", c.xauth, gid)
+func (c *ApiClient) ReinitProxy(product string, productAuth string, token string) error {
+	url := c.encodeURL("/api/topom/proxy/reinit/%s/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth), token)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) ResyncGroupAll() error {
-	url := c.encodeURL("/api/topom/group/resync-all/%s", c.xauth)
+func (c *ApiClient) RemoveProxy(product string, productAuth string, token string, force bool) error {
+	var value int
+	if force {
+		value = 1
+	}
+	url := c.encodeURL("/api/topom/proxy/remove/%s/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), token, value)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) GroupAddServer(gid int, dc, addr string) error {
+func (c *ApiClient) CreateGroup(product string, productAuth string, gid int) error {
+	url := c.encodeURL("/api/topom/group/create/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), gid)
+	return rpc.ApiPutJson(url, nil, nil)
+}
+
+func (c *ApiClient) RemoveGroup(product string, productAuth string, gid int) error {
+	url := c.encodeURL("/api/topom/group/remove/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), gid)
+	return rpc.ApiPutJson(url, nil, nil)
+}
+
+func (c *ApiClient) ResyncGroup(product string, productAuth string, gid int) error {
+	url := c.encodeURL("/api/topom/group/resync/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), gid)
+	return rpc.ApiPutJson(url, nil, nil)
+}
+
+func (c *ApiClient) ResyncGroupAll(product string, productAuth string) error {
+	url := c.encodeURL("/api/topom/group/resync-all/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
+	return rpc.ApiPutJson(url, nil, nil)
+}
+
+func (c *ApiClient) GroupAddServer(product string, productAuth string, gid int, dc, addr string) error {
 	var url string
 	if dc != "" {
-		url = c.encodeURL("/api/topom/group/add/%s/%d/%s/%s", c.xauth, gid, addr, dc)
+		url = c.encodeURL("/api/topom/group/add/%s/%s/%s/%d/%s/%s", c.xauth, product, encodeProductAuth(productAuth), gid, addr, dc)
 	} else {
-		url = c.encodeURL("/api/topom/group/add/%s/%d/%s", c.xauth, gid, addr)
+		url = c.encodeURL("/api/topom/group/add/%s/%s/%s/%d/%s", c.xauth, product, encodeProductAuth(productAuth), gid, addr)
 	}
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) GroupDelServer(gid int, addr string) error {
-	url := c.encodeURL("/api/topom/group/del/%s/%d/%s", c.xauth, gid, addr)
+func (c *ApiClient) GroupDelServer(product string, productAuth string, gid int, addr string) error {
+	url := c.encodeURL("/api/topom/group/del/%s/%s/%s/%d/%s", c.xauth, product, encodeProductAuth(productAuth), gid, addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) GroupPromoteServer(gid int, addr string) error {
-	url := c.encodeURL("/api/topom/group/promote/%s/%d/%s", c.xauth, gid, addr)
+func (c *ApiClient) GroupPromoteServer(product string, productAuth string, gid int, addr string) error {
+	url := c.encodeURL("/api/topom/group/promote/%s/%s/%s/%d/%s", c.xauth, product, encodeProductAuth(productAuth), gid, addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) EnableReplicaGroups(gid int, addr string, value bool) error {
+func (c *ApiClient) EnableReplicaGroups(product string, productAuth string, gid int, addr string, value bool) error {
 	var n int
 	if value {
 		n = 1
 	}
-	url := c.encodeURL("/api/topom/group/replica-groups/%s/%d/%s/%d", c.xauth, gid, addr, n)
+	url := c.encodeURL("/api/topom/group/replica-groups/%s/%s/%s/%d/%s/%d", c.xauth, product, encodeProductAuth(productAuth), gid, addr, n)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) EnableReplicaGroupsAll(value bool) error {
+func (c *ApiClient) EnableReplicaGroupsAll(product string, productAuth string, value bool) error {
 	var n int
 	if value {
 		n = 1
 	}
-	url := c.encodeURL("/api/topom/group/replica-groups-all/%s/%d", c.xauth, n)
+	url := c.encodeURL("/api/topom/group/replica-groups-all/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), n)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) AddSentinel(addr string) error {
-	url := c.encodeURL("/api/topom/sentinels/add/%s/%s", c.xauth, addr)
+func (c *ApiClient) AddSentinel(product string, productAuth string, addr string) error {
+	url := c.encodeURL("/api/topom/sentinels/add/%s/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth), addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) DelSentinel(addr string, force bool) error {
+func (c *ApiClient) DelSentinel(product string, productAuth string, addr string, force bool) error {
 	var value int
 	if force {
 		value = 1
 	}
-	url := c.encodeURL("/api/topom/sentinels/del/%s/%s/%d", c.xauth, addr, value)
+	url := c.encodeURL("/api/topom/sentinels/del/%s/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), addr, value)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) ResyncSentinels() error {
-	url := c.encodeURL("/api/topom/sentinels/resync-all/%s", c.xauth)
+func (c *ApiClient) ResyncSentinels(product string, productAuth string) error {
+	url := c.encodeURL("/api/topom/sentinels/resync-all/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SyncCreateAction(addr string) error {
-	url := c.encodeURL("/api/topom/group/action/create/%s/%s", c.xauth, addr)
+func (c *ApiClient) SyncCreateAction(product string, productAuth string, addr string) error {
+	url := c.encodeURL("/api/topom/group/action/create/%s/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth), addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SyncRemoveAction(addr string) error {
-	url := c.encodeURL("/api/topom/group/action/remove/%s/%s", c.xauth, addr)
+func (c *ApiClient) SyncRemoveAction(product string, productAuth string, addr string) error {
+	url := c.encodeURL("/api/topom/group/action/remove/%s/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth), addr)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SlotCreateAction(sid int, gid int) error {
-	url := c.encodeURL("/api/topom/slots/action/create/%s/%d/%d", c.xauth, sid, gid)
+func (c *ApiClient) SlotCreateAction(product string, productAuth string, sid int, gid int) error {
+	url := c.encodeURL("/api/topom/slots/action/create/%s/%s/%s/%d/%d", c.xauth, product, encodeProductAuth(productAuth), sid, gid)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SlotCreateActionSome(groupFrom, groupTo int, numSlots int) error {
-	url := c.encodeURL("/api/topom/slots/action/create-some/%s/%d/%d/%d", c.xauth, groupFrom, groupTo, numSlots)
+func (c *ApiClient) SlotCreateActionSome(product string, productAuth string, groupFrom, groupTo int, numSlots int) error {
+	url := c.encodeURL("/api/topom/slots/action/create-some/%s/%s/%s/%d/%d/%d", c.xauth, product, encodeProductAuth(productAuth), groupFrom, groupTo, numSlots)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SlotCreateActionRange(beg, end int, gid int) error {
-	url := c.encodeURL("/api/topom/slots/action/create-range/%s/%d/%d/%d", c.xauth, beg, end, gid)
+func (c *ApiClient) SlotCreateActionRange(product string, productAuth string, beg, end int, gid int) error {
+	url := c.encodeURL("/api/topom/slots/action/create-range/%s/%s/%s/%d/%d/%d", c.xauth, product, encodeProductAuth(productAuth), beg, end, gid)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SlotRemoveAction(sid int) error {
-	url := c.encodeURL("/api/topom/slots/action/remove/%s/%d", c.xauth, sid)
+func (c *ApiClient) SlotRemoveAction(product string, productAuth string, sid int) error {
+	url := c.encodeURL("/api/topom/slots/action/remove/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), sid)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SetSlotActionInterval(usecs int) error {
-	url := c.encodeURL("/api/topom/slots/action/interval/%s/%d", c.xauth, usecs)
+func (c *ApiClient) SetSlotActionInterval(product string, productAuth string, usecs int) error {
+	url := c.encodeURL("/api/topom/slots/action/interval/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), usecs)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SetSlotActionDisabled(disabled bool) error {
+func (c *ApiClient) SetSlotActionDisabled(product string, productAuth string, disabled bool) error {
 	var value int
 	if disabled {
 		value = 1
 	}
-	url := c.encodeURL("/api/topom/slots/action/disabled/%s/%d", c.xauth, value)
+	url := c.encodeURL("/api/topom/slots/action/disabled/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), value)
 	return rpc.ApiPutJson(url, nil, nil)
 }
 
-func (c *ApiClient) SlotsAssignGroup(slots []*models.SlotMapping) error {
-	url := c.encodeURL("/api/topom/slots/assign/%s", c.xauth)
+func (c *ApiClient) SlotsAssignGroup(product string, productAuth string, slots []*models.SlotMapping) error {
+	url := c.encodeURL("/api/topom/slots/assign/%s/%s/%s", c.xauth, product, encodeProductAuth(productAuth))
 	return rpc.ApiPutJson(url, slots, nil)
 }
 
-func (c *ApiClient) SlotsAssignOffline(slots []*models.SlotMapping) error {
-	url := c.encodeURL("/api/topom/slots/assign/%s/offline", c.xauth)
+func (c *ApiClient) SlotsAssignOffline(product string, productAuth string, slots []*models.SlotMapping) error {
+	url := c.encodeURL("/api/topom/slots/assign/%s/%s/%s/offline", c.xauth, product, encodeProductAuth(productAuth))
 	return rpc.ApiPutJson(url, slots, nil)
 }
 
-func (c *ApiClient) SlotsRebalance(confirm bool) (map[int]int, error) {
+func (c *ApiClient) SlotsRebalance(product string, productAuth string, confirm bool) (map[int]int, error) {
 	var value int
 	if confirm {
 		value = 1
 	}
-	url := c.encodeURL("/api/topom/slots/rebalance/%s/%d", c.xauth, value)
+	url := c.encodeURL("/api/topom/slots/rebalance/%s/%s/%s/%d", c.xauth, product, encodeProductAuth(productAuth), value)
 	var plans = make(map[string]int)
 	if err := rpc.ApiPutJson(url, nil, &plans); err != nil {
 		return nil, err

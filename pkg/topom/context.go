@@ -17,10 +17,12 @@ import (
 
 const MaxSlotNum = models.MaxSlotNum
 
-type context struct {
-	slots []*models.SlotMapping
-	group map[int]*models.Group
-	proxy map[string]*models.Proxy
+type productContext struct {
+	product string
+	auth    string
+	slots   []*models.SlotMapping
+	group   map[int]*models.Group
+	proxy   map[string]*models.Proxy
 
 	sentinel *models.Sentinel
 
@@ -31,7 +33,35 @@ type context struct {
 	method int
 }
 
-func (ctx *context) getSlotMapping(sid int) (*models.SlotMapping, error) {
+func (s *Topom) newProductContext(product string) (*productContext, error) {
+	if s.closed {
+		return nil, ErrClosedTopom
+	}
+	if !s.productExist(product) {
+		log.Warnf("product %s does not  exist", product)
+		return nil, ErrProductNotExist
+	}
+	if s.online {
+		if err := s.refillProductCache(product); err != nil {
+			return nil, err
+		} else {
+			ctx := &productContext{}
+			ctx.product = product
+			ctx.auth = s.products[product].cache.product.Auth
+			ctx.slots = s.products[product].cache.slots
+			ctx.group = s.products[product].cache.group
+			ctx.proxy = s.products[product].cache.proxy
+			ctx.sentinel = s.products[product].cache.sentinel
+			ctx.hosts.m = make(map[string]net.IP)
+			ctx.method, _ = models.ParseForwardMethod(s.config.MigrationMethod)
+			return ctx, nil
+		}
+	} else {
+		return nil, ErrNotOnline
+	}
+}
+
+func (ctx *productContext) getSlotMapping(sid int) (*models.SlotMapping, error) {
 	if len(ctx.slots) != MaxSlotNum {
 		return nil, errors.Errorf("invalid number of slots = %d/%d", len(ctx.slots), MaxSlotNum)
 	}
@@ -41,7 +71,7 @@ func (ctx *context) getSlotMapping(sid int) (*models.SlotMapping, error) {
 	return nil, errors.Errorf("slot-[%d] doesn't exist", sid)
 }
 
-func (ctx *context) getSlotMappingsByGroupId(gid int) []*models.SlotMapping {
+func (ctx *productContext) getSlotMappingsByGroupId(gid int) []*models.SlotMapping {
 	var slots = []*models.SlotMapping{}
 	for _, m := range ctx.slots {
 		if m.GroupId == gid || m.Action.TargetId == gid {
@@ -51,7 +81,7 @@ func (ctx *context) getSlotMappingsByGroupId(gid int) []*models.SlotMapping {
 	return slots
 }
 
-func (ctx *context) maxSlotActionIndex() (maxIndex int) {
+func (ctx *productContext) maxSlotActionIndex() (maxIndex int) {
 	for _, m := range ctx.slots {
 		if m.Action.State != models.ActionNothing {
 			maxIndex = math2.MaxInt(maxIndex, m.Action.Index)
@@ -60,7 +90,7 @@ func (ctx *context) maxSlotActionIndex() (maxIndex int) {
 	return maxIndex
 }
 
-func (ctx *context) isSlotLocked(m *models.SlotMapping) bool {
+func (ctx *productContext) isSlotLocked(m *models.SlotMapping) bool {
 	switch m.Action.State {
 	case models.ActionNothing, models.ActionPending:
 		return ctx.isGroupLocked(m.GroupId)
@@ -78,7 +108,7 @@ func (ctx *context) isSlotLocked(m *models.SlotMapping) bool {
 	return false
 }
 
-func (ctx *context) toSlot(m *models.SlotMapping, p *models.Proxy) *models.Slot {
+func (ctx *productContext) toSlot(m *models.SlotMapping, p *models.Proxy) *models.Slot {
 	slot := &models.Slot{
 		Id:     m.Id,
 		Locked: ctx.isSlotLocked(m),
@@ -109,7 +139,7 @@ func (ctx *context) toSlot(m *models.SlotMapping, p *models.Proxy) *models.Slot 
 	return slot
 }
 
-func (ctx *context) lookupIPAddr(addr string) net.IP {
+func (ctx *productContext) lookupIPAddr(addr string) net.IP {
 	ctx.hosts.Lock()
 	defer ctx.hosts.Unlock()
 	ip, ok := ctx.hosts.m[addr]
@@ -125,7 +155,7 @@ func (ctx *context) lookupIPAddr(addr string) net.IP {
 	return ip
 }
 
-func (ctx *context) toReplicaGroups(gid int, p *models.Proxy) [][]string {
+func (ctx *productContext) toReplicaGroups(gid int, p *models.Proxy) [][]string {
 	g := ctx.group[gid]
 	switch {
 	case g == nil:
@@ -167,7 +197,7 @@ func (ctx *context) toReplicaGroups(gid int, p *models.Proxy) [][]string {
 	return replicas
 }
 
-func (ctx *context) toSlotSlice(slots []*models.SlotMapping, p *models.Proxy) []*models.Slot {
+func (ctx *productContext) toSlotSlice(slots []*models.SlotMapping, p *models.Proxy) []*models.Slot {
 	var slice = make([]*models.Slot, len(slots))
 	for i, m := range slots {
 		slice[i] = ctx.toSlot(m, p)
@@ -175,14 +205,14 @@ func (ctx *context) toSlotSlice(slots []*models.SlotMapping, p *models.Proxy) []
 	return slice
 }
 
-func (ctx *context) getGroup(gid int) (*models.Group, error) {
+func (ctx *productContext) getGroup(gid int) (*models.Group, error) {
 	if g := ctx.group[gid]; g != nil {
 		return g, nil
 	}
 	return nil, errors.Errorf("group-[%d] doesn't exist", gid)
 }
 
-func (ctx *context) getGroupIndex(g *models.Group, addr string) (int, error) {
+func (ctx *productContext) getGroupIndex(g *models.Group, addr string) (int, error) {
 	for i, x := range g.Servers {
 		if x.Addr == addr {
 			return i, nil
@@ -191,7 +221,7 @@ func (ctx *context) getGroupIndex(g *models.Group, addr string) (int, error) {
 	return -1, errors.Errorf("group-[%d] doesn't have server-[%s]", g.Id, addr)
 }
 
-func (ctx *context) getGroupByServer(addr string) (*models.Group, int, error) {
+func (ctx *productContext) getGroupByServer(addr string) (*models.Group, int, error) {
 	for _, g := range ctx.group {
 		for i, x := range g.Servers {
 			if x.Addr == addr {
@@ -202,7 +232,7 @@ func (ctx *context) getGroupByServer(addr string) (*models.Group, int, error) {
 	return nil, -1, errors.Errorf("server-[%s] doesn't exist", addr)
 }
 
-func (ctx *context) maxSyncActionIndex() (maxIndex int) {
+func (ctx *productContext) maxSyncActionIndex() (maxIndex int) {
 	for _, g := range ctx.group {
 		for _, x := range g.Servers {
 			if x.Action.State == models.ActionPending {
@@ -213,7 +243,7 @@ func (ctx *context) maxSyncActionIndex() (maxIndex int) {
 	return maxIndex
 }
 
-func (ctx *context) minSyncActionIndex() string {
+func (ctx *productContext) minSyncActionIndex() string {
 	var d *models.GroupServer
 	for _, g := range ctx.group {
 		for _, x := range g.Servers {
@@ -230,14 +260,14 @@ func (ctx *context) minSyncActionIndex() string {
 	return d.Addr
 }
 
-func (ctx *context) getGroupMaster(gid int) string {
+func (ctx *productContext) getGroupMaster(gid int) string {
 	if g := ctx.group[gid]; g != nil && len(g.Servers) != 0 {
 		return g.Servers[0].Addr
 	}
 	return ""
 }
 
-func (ctx *context) getGroupMasters() map[int]string {
+func (ctx *productContext) getGroupMasters() map[int]string {
 	var masters = make(map[int]string)
 	for _, g := range ctx.group {
 		if len(g.Servers) != 0 {
@@ -247,7 +277,7 @@ func (ctx *context) getGroupMasters() map[int]string {
 	return masters
 }
 
-func (ctx *context) getGroupIds() map[int]bool {
+func (ctx *productContext) getGroupIds() map[int]bool {
 	var groups = make(map[int]bool)
 	for _, g := range ctx.group {
 		groups[g.Id] = true
@@ -255,7 +285,7 @@ func (ctx *context) getGroupIds() map[int]bool {
 	return groups
 }
 
-func (ctx *context) isGroupInUse(gid int) bool {
+func (ctx *productContext) isGroupInUse(gid int) bool {
 	for _, m := range ctx.slots {
 		if m.GroupId == gid || m.Action.TargetId == gid {
 			return true
@@ -264,7 +294,7 @@ func (ctx *context) isGroupInUse(gid int) bool {
 	return false
 }
 
-func (ctx *context) isGroupLocked(gid int) bool {
+func (ctx *productContext) isGroupLocked(gid int) bool {
 	if g := ctx.group[gid]; g != nil {
 		switch g.Promoting.State {
 		case models.ActionNothing:
@@ -282,21 +312,21 @@ func (ctx *context) isGroupLocked(gid int) bool {
 	return false
 }
 
-func (ctx *context) isGroupPromoting(gid int) bool {
+func (ctx *productContext) isGroupPromoting(gid int) bool {
 	if g := ctx.group[gid]; g != nil {
 		return g.Promoting.State != models.ActionNothing
 	}
 	return false
 }
 
-func (ctx *context) getProxy(token string) (*models.Proxy, error) {
+func (ctx *productContext) getProxy(token string) (*models.Proxy, error) {
 	if p := ctx.proxy[token]; p != nil {
 		return p, nil
 	}
 	return nil, errors.Errorf("proxy-[%s] doesn't exist", token)
 }
 
-func (ctx *context) maxProxyId() (maxId int) {
+func (ctx *productContext) maxProxyId() (maxId int) {
 	for _, p := range ctx.proxy {
 		maxId = math2.MaxInt(maxId, p.Id)
 	}

@@ -78,24 +78,24 @@ class Dashboard():
         }
         base = os.path.join(generate_root, self.env.etc_path.lstrip('/'), self.admin_addr.replace(':', '_'))
 
-        temp = readfile(template_root, "dashboard.toml.template")
-        generate(base, "dashboard.toml", temp.format(**kwargs))
+        temp = readfile(template_root, "topom.toml.template")
+        generate(base, "topom.toml", temp.format(**kwargs))
 
         temp = readfile(template_root, "dashboard.service.template")
         generate(base, "codis_dashboard_{}.service".format(self.admin_port), temp.format(**kwargs))
 
         admin = os.path.join(self.env.bin_path, "codis-admin")
-        generate_bash(base, "dashboard_admin", "{} --dashboard={} $@".format(admin, self.admin_addr))
+        generate_bash(base, "dashboard_admin", "{} --codis-topom={} $@".format(admin, self.admin_addr))
 
         scripts = 'd=1\n'
         for p in proxylist:
-            scripts += "sleep $d; {} --dashboard={} --online-proxy --addr={}".format(admin, self.admin_addr, p.admin_addr)
+            scripts += "sleep $d; {} --codis-topom={} --online-proxy --addr={}".format(admin, self.admin_addr, p.admin_addr)
             scripts += "\n"
         generate_bash(base, "foreach_proxy_online", scripts)
 
         scripts = 'd=1\n'
         for p in proxylist:
-            scripts += "sleep $d; {} --dashboard={} --reinit-proxy --addr={}".format(admin, self.admin_addr, p.admin_addr)
+            scripts += "sleep $d; {} --codis-topom={} --reinit-proxy --addr={}".format(admin, self.admin_addr, p.admin_addr)
             scripts += "\n"
         generate_bash(base, "foreach_proxy_reinit", scripts)
 
@@ -118,8 +118,6 @@ class Template:
         self.max_clients = config.get("max_clients", 10000)
         self.max_pipeline = config.get("max_pipeline", 1024)
         self.log_level = config.get("log_level", "INFO")
-        self.jodis_name = config.get("jodis_name", "")
-        self.jodis_addr = config.get("jodis_addr", "")
 
 
 class Proxy():
@@ -148,8 +146,6 @@ class Proxy():
             'DATACENTER': self.datacenter,
             'MAX_CLIENTS': self.template.max_clients,
             'MAX_PIPELINE': self.template.max_pipeline,
-            'JODIS_NAME': self.template.jodis_name,
-            'JODIS_ADDR': self.template.jodis_addr,
             'MIN_CPU': self.template.min_cpu,
             'MAX_CPU': self.template.max_cpu,
             'LOG_LEVEL': self.template.log_level,

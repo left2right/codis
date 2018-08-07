@@ -1,4 +1,4 @@
-// Copyright 2016 CodisLabs. All Rights Reserved.
+// Copyright 2016 ForzaLabs. All Rights Reserved.
 // Licensed under the MIT (MIT-LICENSE.txt) license.
 
 package proxy
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CodisLabs/codis/pkg/proxy/redis"
-	"github.com/CodisLabs/codis/pkg/utils/assert"
+	"ForzaDB/forza/pkg/proxy/redis"
+	"ForzaDB/forza/pkg/utils/assert"
 )
 
 func TestRequestChan1(t *testing.T) {

@@ -1,4 +1,4 @@
-// Copyright 2016 CodisLabs. All Rights Reserved.
+// Copyright 2016 ForzaLabs. All Rights Reserved.
 // Licensed under the MIT (MIT-LICENSE.txt) license.
 
 package proxy
@@ -6,9 +6,9 @@ package proxy
 import (
 	"testing"
 
-	"github.com/CodisLabs/codis/pkg/models"
-	"github.com/CodisLabs/codis/pkg/utils/assert"
-	"github.com/CodisLabs/codis/pkg/utils/log"
+	"ForzaDB/forza/pkg/models"
+	"ForzaDB/forza/pkg/utils/assert"
+	"ForzaDB/forza/pkg/utils/log"
 )
 
 var config = newProxyConfig()

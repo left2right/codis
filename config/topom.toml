@@ -1,0 +1,58 @@
+
+##################################################
+#                                                #
+#                  Codis-Dashboard               #
+#                                                #
+##################################################
+
+# Set Coordinator, only accept "etcdv3".
+# for zookeeper/etcd, coorinator_auth accept "user:password" 
+# Quick Start
+coordinator_name = "etcdv3"
+coordinator_addr = "127.0.0.1:2379"
+coordinator_auth = ""
+
+# Set Codis Topom Auth.
+topom_auth = ""
+
+# Set bind address for admin(rpc), tcp only.
+admin_addr = "0.0.0.0:18080"
+
+# Set arguments for data migration (only accept 'sync' & 'semi-async').
+migration_method = "semi-async"
+migration_parallel_slots = 100
+migration_async_maxbulks = 200
+migration_async_maxbytes = "32mb"
+migration_async_numkeys = 500
+migration_timeout = "30s"
+
+# Set configs for redis sentinel.
+sentinel_client_timeout = "10s"
+sentinel_quorum = 2
+sentinel_parallel_syncs = 1
+sentinel_down_after = "30s"
+sentinel_failover_timeout = "5m"
+sentinel_notification_script = ""
+sentinel_client_reconfig_script = ""
+
+# topom cluster configurations
+name = "topom"
+data-dir = "default.topom"
+
+client-urls = "http://127.0.0.1:2379"
+# if not set, use ${client-urls}
+advertise-client-urls = ""
+
+peer-urls = "http://127.0.0.1:2380"
+# if not set, use ${peer-urls}
+advertise-peer-urls = ""
+
+initial-cluster = "topom=http://127.0.0.1:2380"
+initial-cluster-state = "new"
+
+lease = 3
+
+cacert-path = ""
+cert-path = ""
+key-path = ""
+

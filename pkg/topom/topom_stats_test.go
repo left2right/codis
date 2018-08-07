@@ -1,4 +1,4 @@
-// Copyright 2016 CodisLabs. All Rights Reserved.
+// Copyright 2016 ForzaLabs. All Rights Reserved.
 // Licensed under the MIT (MIT-LICENSE.txt) license.
 
 package topom
@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/CodisLabs/codis/pkg/models"
-	"github.com/CodisLabs/codis/pkg/proxy/redis"
-	"github.com/CodisLabs/codis/pkg/utils/assert"
-	"github.com/CodisLabs/codis/pkg/utils/log"
+	"ForzaDB/forza/pkg/models"
+	"ForzaDB/forza/pkg/proxy/redis"
+	"ForzaDB/forza/pkg/utils/assert"
+	"ForzaDB/forza/pkg/utils/log"
 )
 
 func TestProxyStats(x *testing.T) {
@@ -169,7 +169,7 @@ func (s *fakeServer) Serve(c net.Conn) {
 		case "AUTH":
 			resp = redis.NewBulkBytes([]byte("OK"))
 		case "INFO":
-			resp = redis.NewBulkBytes([]byte("#Fake Codis Server"))
+			resp = redis.NewBulkBytes([]byte("#Fake Forza Server"))
 		case "MULTI":
 			assert.Must(multi == 0)
 			multi++

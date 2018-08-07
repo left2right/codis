@@ -218,7 +218,7 @@ func (c *Client) Update(path string, data []byte) error {
 	}
 }
 
-func (c *Client) Delete(path string) error {
+func (c *Client) Delete(path string, _ bool) error {
 	c.Lock()
 	defer c.Unlock()
 	if c.closed {

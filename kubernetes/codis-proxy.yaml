@@ -20,7 +20,7 @@ spec:
         lifecycle:
           preStop:
             exec:
-              command: ["/bin/sh", "-c", "codis-admin --dashboard=${DASHBOARD_ADDR} --remove-proxy --addr=${POD_IP}:11080 1>/dev/null 2>&1"]
+              command: ["/bin/sh", "-c", "codis-admin --codis-topom=${DASHBOARD_ADDR} --remove-proxy --addr=${POD_IP}:11080 1>/dev/null 2>&1"]
         env:
         - name: CODIS_PATH
           value: "/gopath/src/github.com/CodisLabs/codis"
@@ -35,7 +35,7 @@ spec:
         - name: ZK_ADDR
           value: "zookeeper:2181"
         - name: DASHBOARD_ADDR
-          value: "codis-dashboard:18080"
+          value: "codis-topom:18080"
         - name: PRODUCT_NAME
           value: "codis-test"
         #- name: PRODUCT_AUTH

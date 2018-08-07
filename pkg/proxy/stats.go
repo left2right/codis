@@ -52,12 +52,14 @@ var cmdstats struct {
 
 	opmap map[string]*opStats
 	total atomic2.Int64
+	slows atomic2.Int64
 	fails atomic2.Int64
 	redis struct {
 		errors atomic2.Int64
 	}
 
-	qps atomic2.Int64
+	qps     atomic2.Int64
+	slowQps atomic2.Int64
 }
 
 func init() {
@@ -66,10 +68,14 @@ func init() {
 		for {
 			start := time.Now()
 			total := cmdstats.total.Int64()
+			slows := cmdstats.slows.Int64()
 			time.Sleep(time.Second)
 			delta := cmdstats.total.Int64() - total
+			slowsDelta := cmdstats.slows.Int64() - slows
 			normalized := math.Max(0, float64(delta)) * float64(time.Second) / float64(time.Since(start))
+			slowsNormalized := math.Max(0, float64(slowsDelta)) * float64(time.Second) / float64(time.Since(start))
 			cmdstats.qps.Set(int64(normalized + 0.5))
+			cmdstats.slowQps.Set(int64(slowsNormalized + 0.5))
 		}
 	}()
 }
@@ -78,12 +84,20 @@ func OpTotal() int64 {
 	return cmdstats.total.Int64()
 }
 
+func OpSlows() int64 {
+	return cmdstats.slows.Int64()
+}
+
 func OpFails() int64 {
 	return cmdstats.fails.Int64()
 }
 
 func OpRedisErrors() int64 {
 	return cmdstats.redis.errors.Int64()
+}
+
+func OpSlowQPS() int64 {
+	return cmdstats.slowQps.Int64()
 }
 
 func OpQPS() int64 {
@@ -147,6 +161,10 @@ func ResetStats() {
 
 func incrOpTotal(n int64) {
 	cmdstats.total.Add(n)
+}
+
+func incrOpSlows(n int64) {
+	cmdstats.slows.Add(n)
 }
 
 func incrOpFails(n int64) {

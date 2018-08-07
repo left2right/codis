@@ -34,6 +34,7 @@ type Session struct {
 	stats struct {
 		opmap map[string]*opStats
 		total atomic2.Int64
+		slows atomic2.Int64
 		fails atomic2.Int64
 		flush struct {
 			n    uint
@@ -228,6 +229,7 @@ func (s *Session) loopWriter(tasks *RequestChan) (err error) {
 			return s.incrOpFails(r, err)
 		} else {
 			s.incrOpStats(r, resp.Type)
+			s.incrOpSlows(r)
 		}
 		if fflush {
 			s.flushOpStats(false)
@@ -653,6 +655,14 @@ func (s *Session) incrOpStats(r *Request, t redis.RespType) {
 	}
 }
 
+func (s *Session) incrOpSlows(r *Request) {
+	if r != nil {
+		if time.Now().UnixNano()-r.UnixNano > s.config.ReuestRespondSlowerThan*1000 {
+			s.stats.slows.Incr()
+		}
+	}
+}
+
 func (s *Session) incrOpFails(r *Request, err error) error {
 	if r != nil {
 		e := s.getOpStats(r.OpStr)
@@ -674,6 +684,7 @@ func (s *Session) flushOpStats(force bool) {
 	s.stats.flush.nano = nano
 
 	incrOpTotal(s.stats.total.Swap(0))
+	incrOpSlows(s.stats.slows.Swap(0))
 	incrOpFails(s.stats.fails.Swap(0))
 	for _, e := range s.stats.opmap {
 		if e.calls.Int64() != 0 || e.fails.Int64() != 0 {

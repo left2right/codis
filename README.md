@@ -21,7 +21,7 @@ Donate if you want to help us maintaining this project. Thank you!
 "Resharding" means migrating the data in one slot from one redis server to another, usually happens while increasing/decreasing the number of redis servers.
 
 ## Other Features
-* GUI website dashboard & admin tools
+* GUI website topom & admin tools
 * Supports most of Redis commands, Fully compatible with Twemproxy(https://github.com/twitter/twemproxy)
 * Proxies can register on zk/etcd, clients can avoid dead proxies, see "High Availability" section.
 

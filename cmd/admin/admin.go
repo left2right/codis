@@ -31,8 +31,8 @@ func (t *cmdAdmin) Main(d map[string]interface{}) {
 		t.handleConfigConvert(d)
 	case d["--config-restore"] != nil:
 		t.handleConfigRestore(d)
-	case d["--dashboard-list"].(bool):
-		t.handleDashboardList(d)
+	case d["--codis-topom-list"].(bool):
+		t.handleTopomList(d)
 	}
 }
 
@@ -58,6 +58,13 @@ func (t *cmdAdmin) newTopomClient(d map[string]interface{}) models.Client {
 			coordinator.auth = utils.ArgumentMust(d, "--etcd-auth")
 		}
 
+	case d["--etcdv3"] != nil:
+		coordinator.name = "etcdv3"
+		coordinator.addr = utils.ArgumentMust(d, "--etcdv3")
+		if d["--etcd-auth"] != nil {
+			coordinator.auth = utils.ArgumentMust(d, "--etcd-auth")
+		}
+
 	case d["--filesystem"] != nil:
 		coordinator.name = "filesystem"
 		coordinator.addr = utils.ArgumentMust(d, "--filesystem")
@@ -78,7 +85,7 @@ func (t *cmdAdmin) newTopomStore(d map[string]interface{}) *models.Store {
 		log.PanicErrorf(err, "invalid product name")
 	}
 	client := t.newTopomClient(d)
-	return models.NewStore(client, t.product)
+	return models.NewStore(client)
 }
 
 func (t *cmdAdmin) handleRemoveLock(d map[string]interface{}) {
@@ -86,7 +93,7 @@ func (t *cmdAdmin) handleRemoveLock(d map[string]interface{}) {
 	defer store.Close()
 
 	log.Debugf("force remove-lock")
-	if err := store.Release(); err != nil {
+	if err := store.Release(t.product); err != nil {
 		log.PanicErrorf(err, "force remove-lock failed")
 	}
 	log.Debugf("force remove-lock OK")
@@ -153,11 +160,11 @@ func (t *cmdAdmin) dumpConfigV3(d map[string]interface{}) {
 	store := t.newTopomStore(d)
 	defer store.Close()
 
-	group, err := store.ListGroup()
+	group, err := store.ListGroup(t.product)
 	if err != nil {
 		log.PanicErrorf(err, "list group failed")
 	}
-	proxy, err := store.ListProxy()
+	proxy, err := store.ListProxy(t.product)
 	if err != nil {
 		log.PanicErrorf(err, "list proxy failed")
 	}
@@ -166,7 +173,7 @@ func (t *cmdAdmin) dumpConfigV3(d map[string]interface{}) {
 		log.Panicf("cann't find product = %s [v3]", t.product)
 	}
 
-	slots, err := store.SlotMappings()
+	slots, err := store.SlotMappings(t.product)
 	if err != nil {
 		log.PanicErrorf(err, "list slots failed")
 	}
@@ -366,11 +373,11 @@ func (t *cmdAdmin) handleConfigRestore(d map[string]interface{}) {
 		return
 	}
 
-	proxy, err := store.ListProxy()
+	proxy, err := store.ListProxy(t.product)
 	if err != nil {
 		log.PanicErrorf(err, "list proxy failed")
 	}
-	group, err := store.ListGroup()
+	group, err := store.ListGroup(t.product)
 	if err != nil {
 		log.PanicErrorf(err, "list group failed")
 	}
@@ -380,29 +387,29 @@ func (t *cmdAdmin) handleConfigRestore(d map[string]interface{}) {
 	}
 
 	for _, s := range config.Slots {
-		if err := store.UpdateSlotMapping(s); err != nil {
+		if err := store.UpdateSlotMapping(t.product, s); err != nil {
 			log.PanicErrorf(err, "restore slot-%04d failed", s.Id)
 		}
 	}
 
 	for _, g := range config.Group {
-		if err := store.UpdateGroup(g); err != nil {
+		if err := store.UpdateGroup(t.product, g); err != nil {
 			log.PanicErrorf(err, "restore group-%04d failed", g.Id)
 		}
 	}
 
 	for _, p := range config.Proxy {
-		if err := store.UpdateProxy(p); err != nil {
+		if err := store.UpdateProxy(t.product, p); err != nil {
 			log.PanicErrorf(err, "restore proxy-%s failed", p.Token)
 		}
 	}
 }
 
-func (t *cmdAdmin) handleDashboardList(d map[string]interface{}) {
+func (t *cmdAdmin) handleTopomList(d map[string]interface{}) {
 	client := t.newTopomClient(d)
 	defer client.Close()
 
-	list, err := client.List(models.CodisDir, false)
+	list, err := client.List(models.CodisProductsDir, false)
 	if err != nil {
 		log.PanicErrorf(err, "list products failed")
 	}
@@ -411,18 +418,14 @@ func (t *cmdAdmin) handleDashboardList(d map[string]interface{}) {
 
 	for _, path := range list {
 		var elem = &struct {
-			Name      string `json:"name"`
-			Dashboard string `json:"dashboard"`
+			Name  string `json:"name"`
+			Topom string `json:"topom"`
 		}{filepath.Base(path), ""}
 
-		if b, err := client.Read(models.LockPath(elem.Name), false); err != nil {
+		if b, err := client.Read("/topom/leader", false); err != nil {
 			log.PanicErrorf(err, "read topom of product %s failed", elem.Name)
 		} else if b != nil {
-			var t = &models.Topom{}
-			if err := json.Unmarshal(b, t); err != nil {
-				log.PanicErrorf(err, "decode json failed")
-			}
-			elem.Dashboard = t.AdminAddr
+			elem.Topom = string(b)
 		}
 
 		nodes = append(nodes, elem)

@@ -21,11 +21,11 @@ zookeeper)
 dashboard)
     docker rm -f      "Codis-D28080" &> /dev/null
     docker run --name "Codis-D28080" -d \
-        --read-only -v `realpath ../config/dashboard.toml`:/codis/dashboard.toml \
+        --read-only -v `realpath ../config/topom.toml`:/codis/topom.toml \
                     -v `realpath log`:/codis/log \
         -p 28080:18080 \
         codis-image \
-        codis-dashboard -l log/dashboard.log -c dashboard.toml --host-admin ${hostip}:28080
+        codis-topom -l log/dashboard.log -c topom.toml --host-admin ${hostip}:28080
     ;;
 
 proxy)

@@ -8,7 +8,7 @@ from fe import *
 
 
 def codis_admin_dashboard(admin_port, args=None):
-    command = "codis-admin --dashboard 127.0.0.1:{}".format(admin_port)
+    command = "codis-admin --codis-topom 127.0.0.1:{}".format(admin_port)
     if args is not None:
         command += " " + args
     return do_command(command)
@@ -40,7 +40,7 @@ if __name__ == "__main__":
     check_alive(children, 1)
     print("[OK] setup codis-server & codis-sentinel")
 
-    # step 2. setup codis-fe & codis-dashboard & codis-proxy
+    # step 2. setup codis-fe & codis-topom & codis-proxy
 
     children.append(CodisFE(8080, "../cmd/fe/assets"))
     children.append(CodisDashboard(18080, product_name, product_auth))
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         children.append(CodisProxy(11080 + i, 19000 + i, product_name, product_auth))
 
     check_alive(children, 3)
-    print("[OK] setup codis-fe & codis-dashboard & codis-proxy")
+    print("[OK] setup codis-fe & codis-topom & codis-proxy")
 
     # step3: init slot-mappings
 
